@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+.env
+config.yaml
+data/
+.locks/
+logs/*.log
+
+.pytest_cache/
+.ruff_cache/
+
+# editor swap/backup files
+*.swp
+*.swo
+*~
+.\#*

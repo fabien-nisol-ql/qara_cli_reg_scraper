@@ -1,0 +1,27 @@
+services:
+  qara-reg-scraper:
+    build: .
+    image: qara-reg-scraper:latest
+    # Default CMD (from the Dockerfile) is "scheduler": this container is
+    # the schedule, via supercronic + docker/crontab. `restart: unless-stopped`
+    # is what makes "scheduled within docker" actually stick across host
+    # reboots/crashes, the way a cron entry would on bare metal.
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      QARA_REG_SCRAPER_CONFIG_FILE: /app/config.yaml
+      # qara-reg-scraper-svc owns Postgres (via its own Flyway migrations)
+      # and exposes the REST API this CLI upserts documents/runs/events/
+      # estimates to — this CLI never talks to Postgres directly. Point
+      # this at a real qara-reg-scraper-svc instance to enable reporting;
+      # unset (the default) means manifests-only, same as always — see
+      # manifest.py's module docstring. Standalone/local use (outside the
+      # QARAlink platform) has no service to point at, so this is commonly
+      # left unset here.
+      QARA_REG_SCRAPER_SERVICE__BASE_URL: ${QARA_REG_SCRAPER_SERVICE__BASE_URL:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - ./.locks:/app/.locks
+      - ./logs:/app/logs

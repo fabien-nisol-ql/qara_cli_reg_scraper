@@ -1,0 +1,24 @@
+# supercronic crontab — standard 5-field cron syntax, runs as the
+# container's non-root `scraper` user with the container's env (from
+# docker-compose's env_file/environment). One entry per source, addressed
+# as <regulation>:<source>, staggered 5 minutes apart — same shape as
+# scripts/install_cron.sh for host cron.
+#
+# Edit and rebuild the image to change the schedule, or bind-mount your own
+# file over /etc/qara-reg-scraper/crontab (see docker-compose.yml). Add
+# lines for other regulations here as they get implemented (see
+# regulations/__init__.py for how to add one).
+#
+# --no-estimate: `run` prints an available/remaining/ETA table before
+# working by default (handy interactively), which costs one extra listing
+# call per source — skip it here since nothing's watching an unattended
+# cron run's stdout for that, and it'd otherwise run forever, every day.
+
+0  3 * * * qara-reg-scraper run --source fda:ecfr --no-estimate
+5  3 * * * qara-reg-scraper run --source fda:guidance --no-estimate
+10 3 * * * qara-reg-scraper run --source fda:clearances_510k --no-estimate
+15 3 * * * qara-reg-scraper run --source fda:warning_letters --no-estimate
+20 3 * * * qara-reg-scraper run --source fda:recalls --no-estimate
+
+# Rebuild the Postgres index once, after all sources have had time to run.
+40 3 * * * qara-reg-scraper reindex --source all

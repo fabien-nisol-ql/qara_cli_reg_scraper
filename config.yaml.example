@@ -1,0 +1,140 @@
+# Copy to config.yaml and edit. Secrets (credentials, DB password) belong in
+# .env instead (see .env.example), not here — this file is safe to commit.
+
+http:
+  contact_email: "fabien.nisol@gmail.com"
+  project_url: "https://github.com/fnisol/qara-reg-scraper"
+  # Uncomment to replace the composed "qara-reg-scraper/0.1 (+project_url;
+  # contact: ...)" User-Agent above with an exact string of your choosing —
+  # sent verbatim, contact_email/project_url are then ignored for this
+  # purpose. Still just a plain, honest identifier — this isn't a way to
+  # impersonate a browser.
+  # user_agent_override: "qara-reg-scraper/0.1 (contact: fabien.nisol@gmail.com)"
+  requests_per_second: 1.0
+  timeout_seconds: 30
+  max_retries: 5
+  respect_robots_txt: true
+
+storage:
+  # local | s3 | azure_blob | sharepoint
+  backend: local
+  local:
+    root: "./data"
+  s3:
+    bucket: "my-qara-reg-archive"
+    prefix: "qara-reg-scraper"
+    region: "us-east-1"
+  azure_blob:
+    container: "qara-reg-archive"
+    prefix: "qara-reg-scraper"
+    account_url: "https://<account>.blob.core.windows.net"
+  sharepoint:
+    site_url: "https://<tenant>.sharepoint.com/sites/<site>"
+    drive_path: "Shared Documents/qara-reg-scraper"
+    tenant_id: "<tenant-id>"
+    client_id: "<app-registration-client-id>"
+
+service:
+  # base_url left unset here on purpose — set
+  # QARA_REG_SCRAPER_SERVICE__BASE_URL in .env. qara-reg-scraper-svc owns
+  # the Postgres index and exposes the REST API this CLI upserts
+  # documents/runs/events/estimates to; `run` still works fully without it
+  # (manifests are always written — see manifest.py), it just won't report
+  # anywhere. `reindex`/`status` need this set to do anything at all.
+  timeout_seconds: 10
+
+# Keyed by regulation code, then by source name within it — see
+# src/qara_reg_scraper/regulations/__init__.py for the full list of what's
+# registered (`qara-reg-scraper list-sources` shows the same, plus enabled
+# state). A regulation or source absent here just uses its defaults; you
+# don't need an entry for everything, only what you want to override.
+regulations:
+  fda:
+    sources:
+      ecfr:
+        enabled: true
+        # ecfr fetches one ~20MB document (the whole of Title 21, via
+        # GovInfo's bulk XML feed) per run, not per-part documents — small
+        # enough that re-verifying periodically is cheap, and this is the
+        # one source where "did the regulation text change" is the actual
+        # point. Without this, the global recheck_after_days default
+        # (null = never) means it's fetched exactly once, ever, and
+        # further changes go unnoticed. Note: because this is one file
+        # covering ALL of Title 21 (not just device-relevant parts), a
+        # re-check is likely to see it as "updated" whenever anything in
+        # Title 21 changes, archiving a full new ~20MB copy each time —
+        # see regulations/fda/ecfr.py's module docstring.
+        recheck_after_days: 14
+      guidance:
+        enabled: true
+      clearances_510k:
+        enabled: true
+        # accessdata.fda.gov (where the summary PDFs live, as opposed to
+        # the openFDA metadata) sits behind Akamai bot management and has
+        # been observed blocking well-identified, rate-limited requests
+        # from datacenter/cloud IPs — see the maintenance note in
+        # regulations/fda/clearances_510k.py. Slower than the global
+        # default on purpose: one request every 5s for this source
+        # specifically.
+        requests_per_second: 0.2
+        # Lower than the global default too — a bot-managed host is
+        # exactly where you want a run to stop early and try again
+        # tomorrow rather than push through a big batch.
+        max_new_documents_per_run: 10
+        # How many days back to ask openFDA for ("everything decided in
+        # the last N days"). 30 (the built-in default) is enough for a
+        # daily job to never miss a clearance; widen it for a one-off
+        # backfill (e.g. 180) or narrow it to cut the per-run listing size
+        # — also overridable per invocation with `run --lookback-days`.
+        lookback_days: 30
+      warning_letters:
+        enabled: true
+      recalls:
+        enabled: true
+        # Same idea as clearances_510k.lookback_days above — openFDA's
+        # "reported in the last N days" window for enforcement reports.
+        lookback_days: 30
+      classification:
+        enabled: true
+        # Reference table, not an activity stream — device classifications
+        # do change (FDA reclassification proceedings) but rarely. Re-verify
+        # periodically so a full catalog walk eventually notices drift,
+        # much less often than ecfr's 14 days.
+        recheck_after_days: 90
+      fdc_act:
+        enabled: true
+        # Same rationale as ecfr's recheck_after_days: without it the
+        # global default (never re-check) means statutory amendments are
+        # never noticed after the first fetch. Amendments to the FD&C Act
+        # are far less frequent than the CFR's own churn, so this is
+        # longer than ecfr's 14 days.
+        recheck_after_days: 30
+  # eu:
+  #   sources:
+  #     ivdr:
+  #       enabled: true
+  # Add a block like this once regulations/eu/ivdr.py (or wherever) exists
+  # and is registered in regulations/__init__.py — nothing here needs to
+  # change ahead of time, an unlisted regulation/source just runs on
+  # defaults.
+
+log_level: INFO
+# Where the internal structured (JSON) log — every HTTP request, retry,
+# bot-detection event, etc. — is written. Unset (the default) means no log
+# sink at all: `run`'s human-oriented progress output (the "[N/budget] new
+# document_id" lines) is the only thing you see unless you set this too.
+# A real file path, or a device path like "/dev/stderr" to fold it into
+# whatever's already capturing stdout/stderr (e.g. `docker compose logs`).
+# Overridable per invocation with `run --log <path>` / `reindex --log
+# <path>`, which beat this when both are set.
+# log_file: "/dev/stderr"
+lock_dir: "./.locks"
+
+# How many *new* documents a single run of a single source will fetch
+# before stopping cleanly and leaving the rest of the backlog for
+# tomorrow's scheduled run — the mechanism that spreads a large backlog
+# over days/weeks instead of hammering a regulator's servers to catch up in
+# one go. Override per-source above
+# (regulations.<reg>.sources.<name>.max_new_documents_per_run) where a
+# different pace makes sense.
+max_new_documents_per_run: 25

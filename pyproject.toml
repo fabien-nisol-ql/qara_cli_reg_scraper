@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qara_cli_reg_scraper"
+version = "0.1.0"
+description = "Self-identifying scraper for medical-device regulatory sources across multiple regulations (FDA today, more addable via regulations/<code>/), with pluggable storage and a file-manifest-first metadata trail."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Fabien Nisol" }]
+
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "tenacity>=8.2",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "PyYAML>=6.0",
+    "filelock>=3.13",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+azure = ["azure-storage-blob>=12.19", "azure-identity>=1.15"]
+sharepoint = ["Office365-REST-Python-Client>=2.5"]
+all-storage = ["qara_cli_reg_scraper[s3,azure,sharepoint]"]
+dev = ["pytest>=8.0", "pytest-mock>=3.14", "responses>=0.25", "ruff>=0.4", "build>=1.2"]
+
+[project.scripts]
+qara-reg-scraper = "qara_reg_scraper.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
