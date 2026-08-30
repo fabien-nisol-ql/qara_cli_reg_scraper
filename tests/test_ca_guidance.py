@@ -8,6 +8,7 @@ link (the "Device Advice: e-Learning tool")."""
 from __future__ import annotations
 
 import responses
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from qara_reg_scraper.config import HttpSettings
 from qara_reg_scraper.http_client import PoliteHttpClient
@@ -72,6 +73,61 @@ def test_absolute_external_link_with_no_path_uses_the_domain_as_id(tmp_path):
 
     assert summary.new == 1
     assert storage.exists("ca/guidance/documents/www.mdsap.global/current.html")
+
+
+@responses.activate
+def test_a_network_failure_on_an_external_link_does_not_stop_the_run(tmp_path):
+    """Regression test for a real, live failure (confirmed 2026-08-30):
+    www.mdsap.global timed out/dropped the connection on every automatic
+    retry for hours, repeatedly stopping the entire run before it ever
+    reached the other genuinely canada.ca-hosted documents. A network
+    failure on an external host must be a routine per-document miss, not
+    a HardStop - unlike a failure on canada.ca itself (see the next
+    test)."""
+    storage, _manifest, scraper = make_scraper(tmp_path)
+    responses.add(
+        responses.GET, LISTING_URL,
+        body=listing_html(
+            '<a href="https://www.mdsap.global/">Medical Device Single Audit Program (MDSAP)</a>'
+            '<a href="/en/health-canada/guidance-document-one.html">Guidance document: One</a>'
+        ),
+        status=200, content_type="text/html",
+    )
+    responses.add(responses.GET, "https://www.mdsap.global/", body=RequestsConnectionError("timed out"))
+    responses.add(
+        responses.GET, f"{BASE_URL}/en/health-canada/guidance-document-one.html",
+        body="<html>guidance content</html>", status=200, content_type="text/html",
+    )
+
+    summary = scraper.run()
+
+    assert summary.stop_reason == "completed"
+    assert summary.new == 1  # the canada.ca one - mdsap.global's failure didn't stop the run
+    assert summary.errors == 1  # still recorded, just not fatal
+    assert storage.exists("ca/guidance/documents/guidance-document-one.html/current.html")
+    assert not storage.exists("ca/guidance/documents/www.mdsap.global/current.html")
+
+
+@responses.activate
+def test_a_network_failure_on_canada_ca_itself_still_stops_the_run(tmp_path):
+    """Unlike an external link, a canada.ca fetch failing at the network
+    level IS real signal about this source's own primary host - must
+    still behave exactly like every other source in this tool."""
+    _storage, _manifest, scraper = make_scraper(tmp_path)
+    responses.add(
+        responses.GET, LISTING_URL,
+        body=listing_html('<a href="/en/health-canada/guidance-document-one.html">Guidance document: One</a>'),
+        status=200, content_type="text/html",
+    )
+    responses.add(
+        responses.GET, f"{BASE_URL}/en/health-canada/guidance-document-one.html",
+        body=RequestsConnectionError("timed out"),
+    )
+
+    summary = scraper.run()
+
+    assert summary.stop_reason == "hard_stop"
+    assert summary.new == 0
 
 
 @responses.activate

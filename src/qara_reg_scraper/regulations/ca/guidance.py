@@ -38,16 +38,31 @@ path.
 Single page, no pagination, no per-document detail fetch beyond the
 linked page itself — closest in shape to fda:warning_letters (a real,
 server-rendered listing) among the FDA sources.
+
+**A network-level failure on an EXTERNAL link (not www.canada.ca) is a
+routine per-document miss, not a HardStop** — see `run()`'s own
+`fetch_one`. Unlike every other source in this tool, this page's
+documents span several independent hosts (canada.ca itself, plus the
+MDSAP program's own site and a PHAC e-learning tool), so a network
+failure on one of those external hosts says nothing about canada.ca's
+own health — confirmed live, 2026-08-30: `www.mdsap.global` timed out or
+dropped the connection on every automatic retry attempt for hours
+straight, which (before this was handled) repeatedly stopped the entire
+run before it ever reached the other ~80 genuinely Health-Canada-hosted
+documents. A failure on www.canada.ca itself still stops the run as
+usual — that IS real signal.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from ...base_scraper import BaseScraper, PreviewInfo
+from ...base_scraper import BaseScraper, HardStop, PreviewInfo
+from ...logging_setup import log_extra
 from ...manifest import RunSummary
 
 BASE_URL = "https://www.canada.ca"
@@ -77,14 +92,35 @@ class GuidanceScraper(BaseScraper):
 
         def fetch_one(document_id: str) -> None:
             entry = by_id[document_id]
-            self.fetch_and_save(
-                document_id=document_id,
-                url=entry["url"],
-                title=entry["title"],
-                ext="html",
-                content_type="text/html",
-                source_metadata={"link_text": entry["title"]},
-            )
+            try:
+                self.fetch_and_save(
+                    document_id=document_id,
+                    url=entry["url"],
+                    title=entry["title"],
+                    ext="html",
+                    content_type="text/html",
+                    source_metadata={"link_text": entry["title"]},
+                )
+            except HardStop as e:
+                if urlparse(entry["url"]).netloc == urlparse(BASE_URL).netloc:
+                    raise  # a canada.ca fetch failing this way IS real signal - propagate as usual
+                # An external reference link (MDSAP's own site, the PHAC
+                # e-learning tool, ...) failing at the network level says
+                # nothing about canada.ca's own health - unlike every
+                # other source here, this one's documents span several
+                # independent hosts, so treating any one of them as
+                # "stop the whole run" would let one broken third-party
+                # site indefinitely block the other ~80 genuinely
+                # Health-Canada-hosted documents. Confirmed live,
+                # 2026-08-30: www.mdsap.global timed out/dropped the
+                # connection on every automatic retry for hours straight
+                # - fetch_and_save already recorded the per-document
+                # error before raising, so nothing more to do here except
+                # not let it end the run.
+                log_extra(
+                    self.log, logging.WARNING, "external_link_fetch_failed_not_fatal",
+                    document_id=document_id, url=entry["url"], error=str(e),
+                )
 
         self.process_candidates(list(by_id.keys()), fetch_one)
         return self.manifest.finalize()
