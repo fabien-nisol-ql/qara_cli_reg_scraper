@@ -139,14 +139,22 @@ regulations:
         max_new_documents_per_run: 10
         # Same reasoning as pma's own recheck_after_days above.
         recheck_after_days: 30
-  # eu:
-  #   sources:
-  #     ivdr:
-  #       enabled: true
-  # Add a block like this once regulations/eu/ivdr.py (or wherever) exists
-  # and is registered in regulations/__init__.py — nothing here needs to
-  # change ahead of time, an unlisted regulation/source just runs on
-  # defaults.
+  eu:
+    sources:
+      mdr:
+        enabled: true
+        # Same rationale as fda:ecfr's recheck_after_days: without it the
+        # global default (never re-check) means EUR-Lex publishing a new
+        # consolidated version (after an amendment) is never noticed once
+        # the first one's fetched. 14 days, same cadence as ecfr — see
+        # regulations/eu/mdr.py's module docstring.
+        recheck_after_days: 14
+      ivdr:
+        enabled: true
+        # Same reasoning as mdr's own recheck_after_days above.
+        recheck_after_days: 14
+      mdcg_guidance:
+        enabled: true
 
 log_level: INFO
 # Where the internal structured (JSON) log — every HTTP request, retry,

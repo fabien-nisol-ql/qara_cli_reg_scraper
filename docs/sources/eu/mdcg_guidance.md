@@ -75,8 +75,5 @@ source, no backlog-pacing concerns like `fda:guidance`'s.
 
 ## Related sources
 
-- No `eu:mdr`/`eu:ivdr` regulation-text source exists yet — EUR-Lex's
-  *consolidated* text of a legal act doesn't sit at one fixed URL the way
-  [`fda:ecfr`](../fda/ecfr.md)'s does (the consolidated CELEX id changes
-  each time an amendment is folded in), which needs its own resolution
-  step before it can be built the same way.
+- [`eu:mdr`](mdr.md) / [`eu:ivdr`](ivdr.md) — the regulation text this
+  guidance interprets.
