@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from qara_reg_scraper.storage.local import LocalStorage
@@ -52,6 +54,33 @@ def test_write_is_overwritten_atomically(tmp_path):
     assert storage.read_bytes("f.txt") == b"second"
     # no leftover .tmp file
     assert not (tmp_path / "f.txt.tmp").exists()
+
+
+def test_concurrent_writers_to_the_same_path_never_collide(tmp_path):
+    """Regression test for a real, live bug (confirmed 2026-08-30): two
+    separate `qara-reg-scraper` processes/containers can legitimately race
+    to write the SAME target path — e.g. two sources sharing a host, both
+    caching that host's robots.txt for the first time in the same
+    instant (eu:mdr and eu:ivdr both hitting eur-lex.europa.eu, triggered
+    in the same SourceRetryScheduler tick). Before this fix, every writer
+    used the identical `<path>.tmp` name, so whichever writer's atomic
+    `replace()` lost the race raised FileNotFoundError renaming a `.tmp`
+    file the winner had already consumed. Each writer now gets its own
+    unique tmp name, so every concurrent write must succeed cleanly —
+    this drives 20 threads at the same path and asserts none of them
+    raise, the final content is one of the written values (not corrupt/
+    truncated/mixed), and no leftover `.tmp.*` files are left behind."""
+    storage = LocalStorage(root=str(tmp_path))
+    writes = [f"payload-{i}".encode() for i in range(20)]
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(storage.write_bytes, "shared/host.json", payload) for payload in writes]
+        for future in futures:
+            future.result()  # re-raises if any writer's write_bytes raised
+
+    assert storage.read_bytes("shared/host.json") in writes
+    leftover_tmp_files = list((tmp_path / "shared").glob("*.tmp*"))
+    assert leftover_tmp_files == []
 
 
 def test_local_root_is_the_real_filesystem_root(tmp_path):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -20,7 +22,21 @@ class LocalStorage(StorageBackend):
     def write_bytes(self, path: str, data: bytes, *, content_type: str | None = None) -> None:
         full = self._full_path(path)
         full.parent.mkdir(parents=True, exist_ok=True)
-        tmp = full.with_suffix(full.suffix + ".tmp")
+        # The tmp filename must be unique PER WRITER, not just per target
+        # path: two separate `qara-reg-scraper` processes (e.g. two
+        # sources sharing a host, each writing that host's robots.txt
+        # cache entry for the first time) can legitimately race to write
+        # the exact same `path` at the exact same instant — confirmed
+        # live, 2026-08-30, eu:mdr and eu:ivdr both scheduled in the same
+        # SourceRetryScheduler tick, both caching eur-lex.europa.eu's
+        # robots.txt concurrently. A shared `.tmp` name meant whichever
+        # writer's `replace()` below lost the race got FileNotFoundError
+        # renaming a `.tmp` file the winner had already consumed (`.tmp`
+        # -> final is destructive to the source). Each writer now gets its
+        # own tmp file, so both `replace()` calls succeed independently —
+        # whichever runs last simply wins the write, which is fine here:
+        # both writers were producing equivalent content anyway.
+        tmp = full.with_suffix(f"{full.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_bytes(data)
         tmp.replace(full)  # atomic on same filesystem — no partial writes on crash
 
