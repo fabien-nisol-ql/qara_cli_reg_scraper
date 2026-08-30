@@ -57,33 +57,13 @@ def test_only_links_inside_the_main_content_region_are_captured(tmp_path):
 
 
 @responses.activate
-def test_absolute_external_link_with_no_path_uses_the_domain_as_id(tmp_path):
-    """A bare-domain external link (no path at all, confirmed live: the
-    MDSAP program's own homepage) still gets a readable id — the domain
-    itself — rather than falling straight to a hash."""
-    storage, _manifest, scraper = make_scraper(tmp_path)
-    responses.add(
-        responses.GET, LISTING_URL,
-        body=listing_html('<a href="https://www.mdsap.global/">Medical Device Single Audit Program (MDSAP)</a>'),
-        status=200, content_type="text/html",
-    )
-    responses.add(responses.GET, "https://www.mdsap.global/", body="<html>mdsap</html>", status=200)
-
-    summary = scraper.run()
-
-    assert summary.new == 1
-    assert storage.exists("ca/guidance/documents/www.mdsap.global/current.html")
-
-
-@responses.activate
-def test_a_network_failure_on_an_external_link_does_not_stop_the_run(tmp_path):
-    """Regression test for a real, live failure (confirmed 2026-08-30):
-    www.mdsap.global timed out/dropped the connection on every automatic
-    retry for hours, repeatedly stopping the entire run before it ever
-    reached the other genuinely canada.ca-hosted documents. A network
-    failure on an external host must be a routine per-document miss, not
-    a HardStop - unlike a failure on canada.ca itself (see the next
-    test)."""
+def test_a_bare_domain_root_link_is_excluded_entirely_not_fetched_as_a_document(tmp_path):
+    """A link with no path at all beyond the bare domain root (confirmed
+    live: the MDSAP program's own homepage, "https://www.mdsap.global/")
+    points at an entire external website, not a specific document with
+    actual content to capture - excluded from the candidate set
+    entirely, never even attempted, rather than fetched-and-stored as if
+    "the whole site" were one document (see the module docstring)."""
     storage, _manifest, scraper = make_scraper(tmp_path)
     responses.add(
         responses.GET, LISTING_URL,
@@ -93,7 +73,47 @@ def test_a_network_failure_on_an_external_link_does_not_stop_the_run(tmp_path):
         ),
         status=200, content_type="text/html",
     )
-    responses.add(responses.GET, "https://www.mdsap.global/", body=RequestsConnectionError("timed out"))
+    responses.add(
+        responses.GET, f"{BASE_URL}/en/health-canada/guidance-document-one.html",
+        body="<html>guidance content</html>", status=200, content_type="text/html",
+    )
+    # No response registered for https://www.mdsap.global/ at all - a request
+    # to it would raise ConnectionError from `responses`, failing this test.
+
+    summary = scraper.run()
+
+    assert summary.new == 1  # only the real canada.ca document
+    assert summary.errors == 0  # not even attempted, so not even a routine miss
+    assert not storage.exists("ca/guidance/documents/www.mdsap.global/current.html")
+
+
+def test_bare_domain_root_detection():
+    is_root = GuidanceScraper._is_bare_domain_root
+    assert is_root("https://www.mdsap.global/") is True
+    assert is_root("https://www.mdsap.global") is True
+    assert is_root("https://www.canada.ca/en/health-canada/guidance-document-one.html") is False
+    assert is_root("https://training-formation.phac-aspc.gc.ca/course/index.php?categoryid=42") is False
+
+
+@responses.activate
+def test_a_network_failure_on_an_external_link_does_not_stop_the_run(tmp_path):
+    """Regression test for a real, live failure (confirmed 2026-08-30,
+    since fixed on the PHAC e-learning tool's own external host - a real
+    document candidate, unlike the now-excluded bare-domain-root MDSAP
+    link above): a network failure on an external host must be a
+    routine per-document miss, not a HardStop - unlike a failure on
+    canada.ca itself (see the next test)."""
+    storage, _manifest, scraper = make_scraper(tmp_path)
+    external_url = "https://training-formation.phac-aspc.gc.ca/course/index.php?categoryid=42&lang=en"
+    responses.add(
+        responses.GET, LISTING_URL,
+        body=listing_html(
+            f'<a href="{external_url}">Device Advice: e-Learning tool</a>'
+            '<a href="/en/health-canada/guidance-document-one.html">Guidance document: One</a>'
+        ),
+        status=200, content_type="text/html",
+    )
+    responses.add(responses.GET, external_url, body=RequestsConnectionError("timed out"))
     responses.add(
         responses.GET, f"{BASE_URL}/en/health-canada/guidance-document-one.html",
         body="<html>guidance content</html>", status=200, content_type="text/html",
@@ -102,10 +122,9 @@ def test_a_network_failure_on_an_external_link_does_not_stop_the_run(tmp_path):
     summary = scraper.run()
 
     assert summary.stop_reason == "completed"
-    assert summary.new == 1  # the canada.ca one - mdsap.global's failure didn't stop the run
+    assert summary.new == 1  # the canada.ca one - the external link's failure didn't stop the run
     assert summary.errors == 1  # still recorded, just not fatal
     assert storage.exists("ca/guidance/documents/guidance-document-one.html/current.html")
-    assert not storage.exists("ca/guidance/documents/www.mdsap.global/current.html")
 
 
 @responses.activate

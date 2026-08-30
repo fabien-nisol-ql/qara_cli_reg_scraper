@@ -15,21 +15,32 @@ curated content list, not a formal table: most links are guidance
 documents proper ("Guidance document: ...", "Guidance on ...", "Notice:
 ..."), each its own canada.ca HTML article — but a handful are related-
 but-distinct content Health Canada chose to place on the same page (an
-e-learning tool, ISO 13485 quality-systems info, MDSAP program info
-including one link straight to `mdsap.global`, a device-licence fee
-schedule). Rather than try to classify "true guidance" vs. "related
-content" from title text alone (fragile — Health Canada's own titling
-isn't consistent enough to draw that line reliably), this captures
-everything in the main content region, same philosophy as
-mdcg_guidance.py's own "capture the real page, don't assume a narrower
-shape" approach to its own edge cases.
+e-learning tool, ISO 13485 quality-systems info, MDSAP program info, a
+device-licence fee schedule). Rather than try to classify "true
+guidance" vs. "related content" from title text alone (fragile — Health
+Canada's own titling isn't consistent enough to draw that line
+reliably), this captures everything in the main content region, same
+philosophy as mdcg_guidance.py's own "capture the real page, don't
+assume a narrower shape" approach to its own edge cases.
 
-All 81 links confirmed unique (no duplicate hrefs). Document ids come
-from each URL's own path slug (every canada.ca page ends in a clean
-`....html` segment) — except the one non-HTML, query-string link (the
-e-learning tool), which falls back to a hash of the full URL, same
-"prefer a natural id, hash fallback for anything unusual" pattern as
-mdcg_guidance.py's own `_document_id`.
+**One real exception**: a link with no path at all beyond the bare
+domain root (e.g. the MDSAP program's own homepage,
+`https://www.mdsap.global/`, confirmed live) is excluded from the
+candidate set entirely — see `_discover()`'s own filter. A link like
+that points at an entire external website, not a specific document with
+actual content to capture; treating "the whole site" as if it were one
+document to fetch/version doesn't make sense the way it does for every
+other link here, and — confirmed live, 2026-08-30 — that specific site
+turned out to be genuinely, persistently unreachable (timing out on
+every attempt for hours), which is exactly the kind of thing this
+exclusion avoids depending on at all, not just tolerates failing.
+
+80 links confirmed unique (no duplicate hrefs) after that exclusion.
+Document ids come from each URL's own path slug (every canada.ca page
+ends in a clean `....html` segment) — except the one non-HTML,
+query-string link (the e-learning tool), which falls back to a hash of
+the full URL, same "prefer a natural id, hash fallback for anything
+unusual" pattern as mdcg_guidance.py's own `_document_id`.
 
 `www.canada.ca/robots.txt` (checked in full, 51 lines) has nothing
 relevant disallowed — its rules are CRA/IRCC-specific, unrelated to this
@@ -39,18 +50,18 @@ Single page, no pagination, no per-document detail fetch beyond the
 linked page itself — closest in shape to fda:warning_letters (a real,
 server-rendered listing) among the FDA sources.
 
-**A network-level failure on an EXTERNAL link (not www.canada.ca) is a
-routine per-document miss, not a HardStop** — see `run()`'s own
+**A network-level failure on an EXTERNAL link (not www.canada.ca) is
+still a routine per-document miss, not a HardStop** — see `run()`'s own
 `fetch_one`. Unlike every other source in this tool, this page's
-documents span several independent hosts (canada.ca itself, plus the
-MDSAP program's own site and a PHAC e-learning tool), so a network
-failure on one of those external hosts says nothing about canada.ca's
-own health — confirmed live, 2026-08-30: `www.mdsap.global` timed out or
-dropped the connection on every automatic retry attempt for hours
-straight, which (before this was handled) repeatedly stopped the entire
-run before it ever reached the other ~80 genuinely Health-Canada-hosted
-documents. A failure on www.canada.ca itself still stops the run as
-usual — that IS real signal.
+documents span several independent hosts (canada.ca itself, plus a PHAC
+e-learning tool and others), so a network failure on one of those
+external hosts says nothing about canada.ca's own health. This is
+belt-and-suspenders alongside the bare-domain-root exclusion above, not
+redundant with it — that exclusion only catches a link with literally no
+path; an external link WITH a real path (like the e-learning tool) is
+still a real document candidate and can still fail this way. A failure
+on www.canada.ca itself still stops the run as usual — that IS real
+signal.
 """
 
 from __future__ import annotations
@@ -152,8 +163,21 @@ class GuidanceScraper(BaseScraper):
             if not href or not title:
                 continue
             url = href if href.startswith("http") else f"{BASE_URL}{href}"
+            if self._is_bare_domain_root(url):
+                # A link to an entire external website (e.g. the MDSAP
+                # program's own homepage, confirmed live:
+                # "https://www.mdsap.global/"), not a specific document
+                # with actual content to capture - see the module
+                # docstring's own note on this. Skipped entirely, not
+                # fetched-and-stored as if "the whole site" were one
+                # document.
+                continue
             by_id[self._document_id(url)] = {"url": url, "title": title}
         return by_id
+
+    @staticmethod
+    def _is_bare_domain_root(url: str) -> bool:
+        return urlparse(url).path in ("", "/") and not urlparse(url).query
 
     @staticmethod
     def _document_id(url: str) -> str:
@@ -162,12 +186,8 @@ class GuidanceScraper(BaseScraper):
             slug = parsed.path.rstrip("/").rsplit("/", 1)[-1]
             if slug:
                 return slug
-            # A bare domain root with no path at all (e.g. the MDSAP
-            # link, confirmed live: "https://www.mdsap.global/") - the
-            # domain itself is still a perfectly readable, stable id.
-            if parsed.netloc:
-                return parsed.netloc
         # The one non-HTML, query-string link (an external e-learning
-        # tool) - no clean path slug or bare domain to key off, so hash
-        # the full URL. Stable and unique, not pretty.
+        # tool) - no clean path slug to key off (bare-domain-root links
+        # never reach here at all - see _discover()'s own filter), so
+        # hash the full URL. Stable and unique, not pretty.
         return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
