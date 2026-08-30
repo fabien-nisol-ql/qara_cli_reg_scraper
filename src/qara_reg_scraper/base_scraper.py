@@ -69,6 +69,25 @@ class HardStop(Exception):
     one left off — nothing about already-fetched documents is lost."""
 
 
+class BotBlockDetected(HardStop):
+    """A HardStop caused specifically by a suspected bot-management block
+    (`looks_like_bot_block` matched) — as distinct from robots.txt
+    disallow or a plain network/retry failure, both still plain
+    `HardStop`. Never retried in-process (see cli.py's `run` retry loop,
+    which checks for this specifically) — confirmed live, 2026-08-30:
+    continuing to probe a host during an ACTIVE reputation/volume-based
+    block plausibly resets or extends its own cooldown rather than ever
+    letting it clear, and four sources independently retrying against the
+    same blocked host every few minutes for up to an hour each kept a
+    real Akamai block on accessdata.fda.gov continuously renewed instead
+    of letting it expire. `RunSummary.stop_reason == "bot_block"` (set by
+    `process_candidates`/every scraper's own hand-rolled run loop) is what
+    actually propagates this distinction outward — see also
+    qara-reg-scraper-svc's `SourceRetryScheduler`, which suspends
+    automatic retries immediately on this signal instead of waiting for
+    several consecutive failures the way every other failure kind does."""
+
+
 @dataclass
 class PreviewInfo:
     """What `qara-reg-scraper run --preview` reports for one source,
@@ -253,7 +272,10 @@ class BaseScraper(ABC):
                 return
             except HardStop as e:
                 log_extra(self.log, logging.WARNING, "run_stopped_early", reason=str(e))
-                self.manifest.summary.stop_reason = "hard_stop"
+                # bot_block is its own stop_reason, not just "hard_stop" - see
+                # BotBlockDetected's own docstring for why this distinction
+                # matters (cli.py's retry loop never retries this one in-process).
+                self.manifest.summary.stop_reason = "bot_block" if isinstance(e, BotBlockDetected) else "hard_stop"
                 return
         self.manifest.summary.stop_reason = "completed"
 
@@ -321,7 +343,7 @@ class BaseScraper(ABC):
                 document_id=document_id, url=url, status=response.status_code,
             )
             self.manifest.record_error(document_id, url=url, error=error)
-            raise HardStop(error)
+            raise BotBlockDetected(error)
 
         try:
             response.raise_for_status()

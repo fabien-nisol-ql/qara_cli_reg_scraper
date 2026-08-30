@@ -63,8 +63,8 @@ class HttpSettings(BaseModel):
     http_client.py — this tool identifies itself on every request and never
     tries to look like a browser or evade throttling."""
 
-    contact_email: str = "fabien.nisol@gmail.com"
-    project_url: str = "https://github.com/fnisol/qara-reg-scraper"
+    contact_email: str = "admin@qaralink.com"
+    project_url: str = "https://qaralink.com/"
     # Set this to replace the composed User-Agent below wholesale — e.g. if
     # you want different wording, no URL, or a value a specific site's admin
     # asked you to use. Leave unset (the default) to get the

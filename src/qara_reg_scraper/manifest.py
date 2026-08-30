@@ -118,10 +118,19 @@ class RunSummary:
     skipped_already_known: int = 0
     # Why the run ended: "completed" (ran out of candidates on its own),
     # "budget_reached" (hit max_new_documents_per_run — expected, not a
-    # problem), or "hard_stop" (an unretryable failure stopped the run
-    # early on purpose, to avoid hammering a server that's signaling
-    # trouble; tomorrow's scheduled run picks up where this left off).
-    stop_reason: Literal["completed", "budget_reached", "hard_stop"] = "completed"
+    # problem), "hard_stop" (an unretryable, non-bot-block failure stopped
+    # the run early to avoid hammering a server that's signaling trouble),
+    # or "bot_block" — a HardStop specifically caused by a suspected
+    # bot-management block (BotBlockDetected — see base_scraper.py's own
+    # docstring). Distinct from plain "hard_stop" because it's handled
+    # differently at every layer above: cli.py's run() never retries it
+    # in-process (unlike other hard-stops, when a retry budget is set),
+    # and qara-reg-scraper-svc's SourceRetryScheduler suspends automatic
+    # retry immediately on seeing it, rather than after several
+    # consecutive failures — continuing to probe a host mid-block
+    # plausibly extends its own cooldown rather than ever letting it
+    # clear (confirmed live, 2026-08-30).
+    stop_reason: Literal["completed", "budget_reached", "hard_stop", "bot_block"] = "completed"
 
     def record(self, result: DocumentResult) -> None:
         self.checked += 1
@@ -214,6 +223,11 @@ class Manifest:
             "unchanged": self.summary.unchanged,
             "errors": self.summary.errors,
             "errorDetails": self.summary.error_details,
+            # Previously omitted entirely — the local manifest JSON has always had this
+            # (RunSummary.to_dict()), but it never actually reached the service, which is
+            # exactly what SourceRetryScheduler now needs to react to a detected bot-block
+            # immediately (see stop_reason's own docstring above).
+            "stopReason": self.summary.stop_reason,
         }
 
     def _sync_event(self, payload: dict[str, Any]) -> None:

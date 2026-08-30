@@ -2,14 +2,14 @@
 # .env instead (see .env.example), not here — this file is safe to commit.
 
 http:
-  contact_email: "fabien.nisol@gmail.com"
-  project_url: "https://github.com/fnisol/qara-reg-scraper"
+  contact_email: "admin@qaralink.com"
+  project_url: "https://qaralink.com/"
   # Uncomment to replace the composed "qara-reg-scraper/0.1 (+project_url;
   # contact: ...)" User-Agent above with an exact string of your choosing —
   # sent verbatim, contact_email/project_url are then ignored for this
   # purpose. Still just a plain, honest identifier — this isn't a way to
   # impersonate a browser.
-  # user_agent_override: "qara-reg-scraper/0.1 (contact: fabien.nisol@gmail.com)"
+  # user_agent_override: "qara-reg-scraper/0.1 (contact: admin@qaralink.com)"
   requests_per_second: 1.0
   timeout_seconds: 30
   max_retries: 5

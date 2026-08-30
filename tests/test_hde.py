@@ -165,7 +165,7 @@ def test_budget_stops_run_after_max_new_order_letters(tmp_path):
 
 
 @responses.activate
-def test_hard_stop_ends_the_whole_run_not_just_one_record(tmp_path):
+def test_a_bot_block_ends_the_whole_run_not_just_one_record(tmp_path):
     storage, _manifest, scraper = make_scraper(tmp_path)
     responses.add(responses.GET, LISTING_URL, body=LISTING_HTML, status=200)
     responses.add(
@@ -175,7 +175,7 @@ def test_hard_stop_ends_the_whole_run_not_just_one_record(tmp_path):
 
     summary = scraper.run()
 
-    assert summary.stop_reason == "hard_stop"
+    assert summary.stop_reason == "bot_block"
     assert storage.exists("fda/hde/documents/H200002/metadata/current.json")
     # H000007 (parsed second) never reached — the run stopped at H200002's block.
     assert not storage.exists("fda/hde/documents/H000007/metadata/current.json")

@@ -55,7 +55,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 
-from ...base_scraper import BaseScraper, BudgetExhausted, HardStop, PreviewInfo
+from ...base_scraper import BaseScraper, BotBlockDetected, BudgetExhausted, HardStop, PreviewInfo
 from ...http_client import looks_like_bot_block
 from ...logging_setup import log_extra
 from ...manifest import RunSummary
@@ -105,7 +105,7 @@ class PmaScraper(BaseScraper):
                     return self.manifest.finalize()
                 except HardStop as e:
                     self.log.warning(f"pma: stopping run early: {e}")
-                    self.manifest.summary.stop_reason = "hard_stop"
+                    self.manifest.summary.stop_reason = "bot_block" if isinstance(e, BotBlockDetected) else "hard_stop"
                     return self.manifest.finalize()
             self.manifest.summary.stop_reason = "completed"
         except (BudgetExhausted, HardStop):
@@ -218,7 +218,7 @@ class PmaScraper(BaseScraper):
                 decision_id=decision_id, url=url, status=response.status_code, content_type=content_type,
             )
             self.manifest.record_error(document_id, url=url, error=error)
-            raise HardStop(error)
+            raise BotBlockDetected(error)
 
         content_type = response.headers.get("Content-Type", "")
         if response.status_code != 200 or "pdf" not in content_type.lower():

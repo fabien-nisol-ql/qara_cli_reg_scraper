@@ -267,6 +267,7 @@ def test_construction_pushes_initial_running_run(tmp_path):
         "runId": "run-1", "regulation": "fda", "source": "ecfr",
         "finishedAt": None, "status": "running",
         "checked": 0, "new": 0, "updated": 0, "unchanged": 0, "errors": 0, "errorDetails": [],
+        "stopReason": "completed",
     }
 
 
@@ -325,6 +326,23 @@ def test_finalize_pushes_final_run_status(tmp_path):
     assert len(run_calls) == 1
     assert run_calls[0][1][0]["status"] == "partial_failure"
     assert run_calls[0][1][0]["errors"] == 1
+
+
+def test_finalize_pushes_stop_reason(tmp_path):
+    """Previously omitted from the pushed DTO entirely (RunSummary.
+    to_dict() had it, _run_dto() didn't) - qara-reg-scraper-svc's
+    SourceRetryScheduler now depends on this specifically to react to a
+    detected bot-management block immediately."""
+    storage = LocalStorage(root=str(tmp_path))
+    client = _FakeServiceClient()
+    manifest = Manifest(storage, "fda", "ecfr", run_id="run-1", service_client=client)
+    client.calls.clear()
+
+    manifest.summary.stop_reason = "bot_block"
+    manifest.finalize()
+
+    run_calls = [c for c in client.calls if c[0] == "upsert_run"]
+    assert run_calls[-1][1][0]["stopReason"] == "bot_block"
 
 
 def test_write_estimate_pushes_put_source_estimate(tmp_path):

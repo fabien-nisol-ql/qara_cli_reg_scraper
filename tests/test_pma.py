@@ -172,7 +172,7 @@ def test_budget_stops_run_after_max_new_order_letters(tmp_path):
 
 
 @responses.activate
-def test_hard_stop_ends_the_whole_run_not_just_one_record(tmp_path):
+def test_a_bot_block_ends_the_whole_run_not_just_one_record(tmp_path):
     storage, _manifest, scraper = make_scraper(tmp_path)
     records = [openfda_pma_record("P160035"), openfda_pma_record("P170099")]
     responses.add(responses.GET, ENDPOINT, json={"results": records}, status=200)
@@ -184,7 +184,7 @@ def test_hard_stop_ends_the_whole_run_not_just_one_record(tmp_path):
 
     summary = scraper.run()
 
-    assert summary.stop_reason == "hard_stop"
+    assert summary.stop_reason == "bot_block"
     assert summary.new == 1  # only P160035's metadata; its PDF failed
     assert storage.exists("fda/pma/documents/P160035/metadata/current.json")
     assert not storage.exists("fda/pma/documents/P170099/metadata/current.json")

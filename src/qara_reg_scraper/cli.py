@@ -719,13 +719,39 @@ def run(
                                     extra={"extra_fields": {"source": qualified_name, "error": str(e)}},
                                 )
 
+                        # A detected bot-management block is NEVER retried in-process,
+                        # regardless of effective_retry_budget_minutes - unlike every
+                        # other hard-stop cause (robots.txt, a network failure already
+                        # retried and exhausted one layer down in PoliteHttpClient).
+                        # See BotBlockDetected's own docstring in base_scraper.py:
+                        # continuing to probe a host during an ACTIVE reputation/
+                        # volume-based block plausibly resets or extends its own
+                        # cooldown rather than ever letting it clear - confirmed live,
+                        # 2026-08-30, where exactly this in-process retrying (across
+                        # several sources sharing one host, each retrying for up to an
+                        # hour) very likely kept a real Akamai block continuously
+                        # renewed. qara-reg-scraper-svc's SourceRetryScheduler picks up
+                        # from here: it suspends this source's own AUTOMATIC retries
+                        # immediately on stop_reason="bot_block" too (see its own
+                        # docstring) - a human has to look at this and manually
+                        # trigger a retry (POST /v1/jobs/scrape) once they're ready,
+                        # rather than either layer quietly probing again on its own.
+                        if summary.stop_reason == "bot_block":
+                            if not quiet:
+                                console.print(
+                                    f"  [red]{qualified_name}: stopped — this looks like a bot-management "
+                                    f"block, not a transient failure. Not retrying automatically; a human "
+                                    f"needs to decide when to try again.[/red]"
+                                )
+                            break
+
                         # Whole-run retry decision: only a clean hard-stop
-                        # (bot-block, robots.txt, network failure already
-                        # retried and exhausted one layer down in
-                        # PoliteHttpClient — see http_client.py) is ever
-                        # retried here, and only when something opted this
-                        # invocation in (effective_retry_budget_minutes is
-                        # not None — see the module docstring on that var).
+                        # (robots.txt, network failure already retried and
+                        # exhausted one layer down in PoliteHttpClient — see
+                        # http_client.py) is ever retried here, and only when
+                        # something opted this invocation in
+                        # (effective_retry_budget_minutes is not None — see
+                        # the module docstring on that var).
                         if summary.stop_reason != "hard_stop" or effective_retry_budget_minutes is None:
                             break
                         remaining_budget = effective_retry_budget_minutes - retry_elapsed_minutes

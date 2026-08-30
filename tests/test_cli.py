@@ -78,6 +78,26 @@ class _HardStopThenSucceedScraper(_RecordingScraper):
         return self.manifest.finalize()
 
 
+class _BotBlockScraper(_RecordingScraper):
+    """Always reports a detected bot-management block, never recovers —
+    for testing that this specific stop_reason is NEVER retried
+    in-process, unlike a plain "hard_stop" (see
+    test_hard_stop_retries_and_succeeds_within_budget above) even with a
+    generous retry_budget_minutes. Same call_count convention as
+    _HardStopThenSucceedScraper."""
+
+    regulation = "fda"
+    name = "ecfr"
+    call_count: ClassVar[int] = 0
+
+    def run(self) -> RunSummary:
+        type(self).call_count += 1
+        type(self).run_was_called = True
+        self.manifest.record_error("bad-doc", url="u", error="simulated bot-management block")
+        self.manifest.summary.stop_reason = "bot_block"
+        return self.manifest.finalize(status="failed")
+
+
 class _ErroringScraper(_RecordingScraper):
     """Same as _RecordingScraper, but records one document error — for
     testing that --quiet still surfaces errors even with live progress and
@@ -755,6 +775,29 @@ def test_hard_stop_exhausts_budget_then_gives_up(tmp_path, monkeypatch):
     assert result.exit_code == 1, result.output
     assert _HardStopThenSucceedScraper.call_count == 3  # original + 2 retries, budget then exhausted
     assert sleep_calls == [60, 120]  # 1 min, then 2 min (3 min budget used exactly, not exceeded)
+
+
+def test_a_bot_block_is_never_retried_in_process_even_with_a_generous_budget(tmp_path, monkeypatch):
+    """The whole point of stop_reason="bot_block" being distinct from
+    plain "hard_stop": continuing to probe a host during an active
+    reputation/volume-based block plausibly resets or extends its own
+    cooldown rather than ever letting it clear (confirmed live,
+    2026-08-30 - see BotBlockDetected's own docstring in base_scraper.py).
+    A generous retry_budget_minutes must NOT cause any in-process retry
+    here, unlike test_hard_stop_retries_and_succeeds_within_budget above."""
+    _BotBlockScraper.call_count = 0
+    settings = make_settings(tmp_path, retry_budget_minutes=60)
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _BotBlockScraper}})
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(cli_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    result = runner.invoke(cli_module.app, ["run", "--source", "fda:ecfr", "--no-estimate"])
+
+    assert result.exit_code == 1, result.output
+    assert _BotBlockScraper.call_count == 1  # exactly one attempt - never retried
+    assert sleep_calls == []
+    assert "bot-management block" in result.output
 
 
 def test_no_retry_budget_means_zero_retries(tmp_path, monkeypatch):
