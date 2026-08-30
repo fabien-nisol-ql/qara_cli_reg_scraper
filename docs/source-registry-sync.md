@@ -21,13 +21,23 @@ The **entire** known-source registry, every time — never a partial or
 filtered list. One entry per `(regulation, source)`:
 
 ```json
-{"regulation": "fda", "source": "ecfr", "label": "eCFR", "description": "21 CFR Title 21, full text (GovInfo bulk XML)"}
+{"regulation": "fda", "source": "ecfr", "label": "eCFR", "description": "21 CFR Title 21, full text (GovInfo bulk XML)", "enabled": true, "requestsPerSecond": 1.0, "maxNewDocumentsPerRun": 1000, "recheckAfterDays": 14, "lookbackDays": null}
 ```
 
 `label` is each `BaseScraper` subclass's `label` class attribute (a short
 display name, e.g. `"eCFR"`, `"510(k) Clearances"`) — distinct from the
 longer `description` already used by `list-sources`. Falls back to the
 source's `name` if a scraper hasn't set one.
+
+The five settings fields (`enabled` onward) are each source's *effective*
+value — `SourceSettings` from `config.yaml` if set, else the matching
+global default (`Settings.http.requests_per_second`,
+`Settings.max_new_documents_per_run`) — the same precedence chain `run`'s
+own preview table resolves, not the raw (possibly-`None`) override. This
+is what lets `GET /v1/sources` show a viewer what to actually expect from
+a source. `recheckAfterDays`/`lookbackDays` being `null` is a real,
+meaningful value (never re-checked; not a lookback-windowed source),
+not "unset" — see `_source_registry_payload`'s own docstring in `cli.py`.
 
 The service treats a sync as **replace-in-place**: it upserts every entry
 in the payload by `(regulation, source)`, and deletes any row it already

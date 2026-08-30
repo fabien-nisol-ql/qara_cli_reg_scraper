@@ -280,23 +280,55 @@ def list_sources() -> None:
     console.print(table)
 
 
-def _source_registry_payload() -> list[dict[str, str]]:
+def _source_registry_payload(settings: Settings) -> list[dict[str, object]]:
     """Every entry in REGULATION_REGISTRY, in the shape
     qara-reg-scraper-svc's PUT /v1/sources expects — shared by `run`'s
     graceful per-invocation push and the standalone `sync-sources`
     command. See docs/source-registry-sync.md: this is always the FULL
     registry, never a partial/filtered list — the service treats a sync
-    as a replace-in-place (upserts what's here, deletes what isn't)."""
-    return [
-        {
-            "regulation": regulation,
-            "source": name,
-            "label": cls.label or name,
-            "description": cls.description,
-        }
-        for regulation, sources in REGULATION_REGISTRY.items()
-        for name, cls in sources.items()
-    ]
+    as a replace-in-place (upserts what's here, deletes what isn't).
+
+    Also carries each source's *effective* settings — not the raw,
+    possibly-`None` config.yaml override, but the actual value a real run
+    applies, resolved through the same `SourceSettings` > global-default
+    precedence `run()`'s own preview table uses (see its `effective_rps`/
+    `effective_max` there) — minus the CLI-flag layer, since this isn't
+    tied to one invocation. This is what lets a viewer (GET /v1/sources)
+    see what to actually expect from a source, rather than nothing at
+    all — previously the only place any of this lived was config.yaml on
+    this machine."""
+    payload = []
+    for regulation, sources in REGULATION_REGISTRY.items():
+        for name, cls in sources.items():
+            source_settings = get_source_settings(settings, regulation, name)
+            effective_rps = (
+                source_settings.requests_per_second
+                if source_settings.requests_per_second is not None
+                else settings.http.requests_per_second
+            )
+            effective_max = normalize_unlimited(
+                source_settings.max_new_documents_per_run
+                if source_settings.max_new_documents_per_run is not None
+                else settings.max_new_documents_per_run
+            )
+            payload.append(
+                {
+                    "regulation": regulation,
+                    "source": name,
+                    "label": cls.label or name,
+                    "description": cls.description,
+                    "enabled": source_settings.enabled,
+                    "requestsPerSecond": effective_rps,
+                    "maxNewDocumentsPerRun": effective_max,
+                    # None is a real, meaningful value for both of these
+                    # (never re-checked; not a lookback-windowed source at
+                    # all) - not "missing data," so passed through as-is
+                    # rather than defaulted to something else.
+                    "recheckAfterDays": source_settings.recheck_after_days,
+                    "lookbackDays": source_settings.lookback_days,
+                }
+            )
+    return payload
 
 
 @app.command(name="sync-sources")
@@ -324,7 +356,7 @@ def sync_sources(
         console.print("[red]service.base_url is not set (QARA_REG_SCRAPER_SERVICE__BASE_URL).[/red]")
         raise typer.Exit(2)
     client = ScraperServiceClient(settings.service)
-    payload = _source_registry_payload()
+    payload = _source_registry_payload(settings)
     try:
         client.sync_sources(payload)
     except ServiceSyncError as e:
@@ -474,7 +506,7 @@ def run(
     # the registry is a courtesy, not this invocation's actual job.
     if service_client is not None:
         try:
-            service_client.sync_sources(_source_registry_payload())
+            service_client.sync_sources(_source_registry_payload(settings))
         except ServiceSyncError as e:
             get_logger("cli").warning(f"source registry sync failed (continuing run): {e}")
 
