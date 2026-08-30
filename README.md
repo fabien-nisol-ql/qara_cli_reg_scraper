@@ -778,8 +778,8 @@ configured, its `scrape_run` table too.
 
 ## Regulations & sources
 
-Each source has its own doc at `docs/sources/fda/<name>.md` — what it
-covers, exactly how it's fetched, its document/storage shape, its
+Each source has its own doc at `docs/sources/<regulation>/<name>.md` —
+what it covers, exactly how it's fetched, its document/storage shape, its
 source-specific config knobs, and known quirks/maintenance notes. This
 table is just an index; run `make run -- list-sources` for the live
 enabled/disabled state — this file can drift, that command can't.
@@ -795,6 +795,7 @@ enabled/disabled state — this file can drift, that command can't.
 | `fda`      | [`hde`](docs/sources/fda/hde.md)                               | Humanitarian Device Exemption (HDE) approvals **+ approval order letters** | fda.gov listing page (HTML scrape, `bs4` — no openFDA endpoint exists) + accessdata.fda.gov (the actual PDF) |
 | `fda`      | [`recalls`](docs/sources/fda/recalls.md)                      | Device recalls / enforcement                      | openFDA `device/enforcement` (official JSON API) |
 | `fda`      | [`warning_letters`](docs/sources/fda/warning_letters.md)      | Warning letters, all centers                      | HTML scrape (`bs4`) — FDA has no public API for these |
+| `eu`       | [`mdcg_guidance`](docs/sources/eu/mdcg_guidance.md)            | MDCG guidance and other MDR/IVDR guidance         | HTML scrape (`bs4`) — the Commission has no public API for these |
 
 Roughly, the chain these sources cover: `fdc_act` (the statute) →
 `ecfr`/`guidance` (FDA's regulations and interpretation of it) →
@@ -814,31 +815,41 @@ This table (and `list-sources`) is also what gets pushed to
 hand-maintenance — see [`docs/source-registry-sync.md`](docs/source-registry-sync.md)
 for exactly when that push happens.
 
-## Adding a new regulation
+## Adding a new regulation (or a new source within one)
 
 Nothing outside `regulations/` needs to change — config, storage, the
-service client, and the CLI are all regulation-agnostic. To add e.g. EU IVDR:
+service client, and the CLI are all regulation-agnostic. `regulations/eu/`
+already exists (one source so far, `mdcg_guidance` — see
+[`docs/sources/eu/mdcg_guidance.md`](docs/sources/eu/mdcg_guidance.md));
+adding e.g. its next source, the MDR/IVDR regulation text itself, works
+the same way a brand-new regulation namespace would:
 
-1. Create `src/qara_reg_scraper/regulations/eu/`.
+1. Create `src/qara_reg_scraper/regulations/<code>/` if it doesn't exist
+   yet (it does for `eu`).
 2. Write one or more `BaseScraper` subclasses there (see
    `regulations/fda/` for a full worked example covering seven different
    source shapes: two single-fixed-document bulk-text fetches, two
    paginated HTML scrapes, and three openFDA-JSON-listing-backed sources —
    one lookback-windowed with a shared per-document fetch, one
    lookback-windowed with content inline in the listing, one a full-catalog
-   walk of a stable reference table). Each sets `regulation = "eu"` and its
-   own `name`, e.g. `"ivdr"`.
-3. Export them as a `dict[str, type[BaseScraper]]` — `EU_SOURCES` — from
-   `regulations/eu/__init__.py` (mirrors `regulations/fda/__init__.py`).
-4. Add one line to `REGULATION_REGISTRY` in `regulations/__init__.py`.
-5. Write `docs/sources/eu/<name>.md` for each new source (mirrors
-   `docs/sources/fda/*.md` — see any of those for the expected shape:
-   what it covers, how it's fetched, document/storage shape, config
-   knobs, known quirks, related sources).
+   walk of a stable reference table; `regulations/eu/mdcg_guidance.py` is
+   a fourth shape — a single server-rendered HTML table page, no
+   pagination or JS needed). Each sets `regulation = "<code>"` and its own
+   `name`, e.g. `"mdr"`.
+3. Export it from that package's `dict[str, type[BaseScraper]]` (e.g.
+   `EU_SOURCES` in `regulations/eu/__init__.py`, mirroring
+   `regulations/fda/__init__.py`).
+4. If it's a brand-new regulation namespace, add one line to
+   `REGULATION_REGISTRY` in `regulations/__init__.py` (not needed for a
+   new source within `eu` — already registered).
+5. Write `docs/sources/<code>/<name>.md` for each new source (mirrors
+   `docs/sources/fda/*.md`/`docs/sources/eu/mdcg_guidance.md` — see any of
+   those for the expected shape: what it covers, how it's fetched,
+   document/storage shape, config knobs, known quirks, related sources).
 
 That's it — `qara-reg-scraper list-sources` picks it up automatically,
-`--source eu:ivdr` / `eu:all` work, manifests land under `eu/ivdr/...`, and
-`config.yaml`'s `regulations.eu.sources.ivdr.*` (optional — defaults apply
+`--source eu:mdr` / `eu:all` work, manifests land under `eu/mdr/...`, and
+`config.yaml`'s `regulations.eu.sources.mdr.*` (optional — defaults apply
 if you skip it) all follow the same shape `fda` already uses.
 
 ## Tests
