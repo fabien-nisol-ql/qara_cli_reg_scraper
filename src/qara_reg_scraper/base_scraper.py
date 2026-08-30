@@ -42,6 +42,7 @@ backlog, spread over days/weeks instead of hammered through in one run:
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -80,6 +81,24 @@ class PreviewInfo:
     total_available: int | None
     already_known: int | None
     note: str | None = None
+    #: The next UTC time this source's own host says (via robots.txt
+    #: Visiting-hours) it's next fetchable — None for the vast majority of
+    #: sources, whose host declares no such restriction, or if fetchable
+    #: right now either way. Only a source whose estimate() actually
+    #: checks `self.http.next_available_at(...)` for its own host ever
+    #: sets this (clearances_510k.py/pma.py/hde.py, today) — every other
+    #: scraper's PreviewInfo leaves it at the default. See
+    #: Manifest.write_estimate: this is what lets qara-reg-scraper-svc's
+    #: own scheduler avoid triggering a job that would immediately no-op,
+    #: and surfaces the same information to a human in the UI.
+    next_available_at: datetime | None = None
+    #: A human-readable description of the RECURRING window itself (e.g.
+    #: "11:00 PM–5:00 AM America/New York"), not just the one future
+    #: instant `next_available_at` is — set alongside it (same sources,
+    #: same `self.http.visiting_hours_description(...)` call), so a UI can
+    #: explain WHY a source pauses on a schedule at all, not just when it
+    #: resumes this one time. None whenever `next_available_at` is too.
+    next_available_note: str | None = None
 
     @property
     def remaining(self) -> int | None:
@@ -109,6 +128,7 @@ class BaseScraper(ABC):
         max_new_documents: int | None = None,
         recheck_after_days: int | None = None,
         lookback_days: int | None = None,
+        time_budget_minutes: int | None = None,
     ):
         self.http = http
         self.manifest = manifest
@@ -122,6 +142,21 @@ class BaseScraper(ABC):
         self.lookback_days = lookback_days
         self.log = get_logger(f"{self.regulation}.{self.name}")
         self._new_count = 0
+        # A DOCUMENT-count budget (max_new_documents) alone assumes fetches
+        # are roughly uniformly fast — true for most sources, badly wrong
+        # for one whose host enforces a real per-request pace (confirmed
+        # live: accessdata.fda.gov's own robots.txt Hit-rate, honored
+        # automatically now — see http_client.py/robots_policy.py). A
+        # retry-triggered job's own "--max-new-documents -1" (unlimited —
+        # see ScrapeJobService#triggerRetry) at a 30s/request pace could
+        # otherwise run for many HOURS in one uninterruptible attempt,
+        # instead of yielding back to the next scheduled retry — this is
+        # the second, independent budget that actually bounds that: once
+        # `time_budget_minutes` of wall-clock time has elapsed, treat the
+        # run exactly as budget_exhausted, the same clean stop every
+        # scraper already handles — no per-scraper code needed. None (the
+        # default) means no such cap, unchanged from before this existed.
+        self._deadline = time.monotonic() + time_budget_minutes * 60 if time_budget_minutes is not None else None
 
     @property
     def qualified_name(self) -> str:
@@ -172,11 +207,18 @@ class BaseScraper(ABC):
         attempting a fetch: relying only on `_consume_budget`'s post-fetch
         raise can't stop the very first fetch when the budget is already
         zero, which is exactly the case `--max-new-documents 0` needs to
-        get right (see `fetch_and_save` and `process_candidates`)."""
+        get right (see `fetch_and_save` and `process_candidates`). Also
+        true once `time_budget_minutes` of wall-clock time has elapsed
+        (see `__init__`) — same clean budget_reached stop, just a second,
+        independent trigger for it."""
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            return True
         return self.max_new_documents is not None and self._new_count >= self.max_new_documents
 
     def _consume_budget(self) -> None:
         self._new_count += 1
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise BudgetExhausted()
         if self.max_new_documents is not None and self._new_count >= self.max_new_documents:
             raise BudgetExhausted()
 

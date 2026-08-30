@@ -66,6 +66,18 @@ retries a few times, then cancels that source's run with a clear error
 rather than reporting "success" while quietly writing nothing to the
 service (see [service_client.py](src/qara_reg_scraper/service_client.py)).
 
+**These calls are intentionally never authenticated.** `service.base_url`
+points straight at `qara-reg-scraper-svc` on the internal docker network
+(e.g. `http://reg-scraper:8080/api/reg-scraper`) — no auth-gw, no JWT, no
+credential to configure here, by design. The service's own role-based
+access control (`admin`/`viewer`, see its README's "Access control"
+section) only gates the endpoints a *human* reaches through auth-gw; the
+endpoints this CLI calls (`/v1/documents`, `/v1/runs`, `/v1/events`,
+`/v1/source-estimates`, `/v1/sources` PUT, `/v1/status`, `/v1/runs` GET)
+stay open to unauthenticated callers specifically so this CLI keeps
+working exactly as before — this is an internal network trust boundary,
+not an oversight, and it stays that way after that access-control work.
+
 ## Directory layout
 
 Everything lives under one storage root, organized by regulation, then by
@@ -123,11 +135,48 @@ This is the concrete answer to "don't hide that this is a scraping tool":
   put here.
 - **`From` header**: your contact email, on every request.
 - **`robots.txt`**: fetched and honored per host before any request
-  (`http.respect_robots_txt: true` by default). A disallowed path is
-  skipped and logged, not worked around.
+  (`http.respect_robots_txt: true` by default) — every directive a host
+  actually publishes, not just `Disallow`:
+  - A disallowed path is skipped and logged, not worked around.
+  - The standard `Crawl-delay`, and the non-standard `Hit-rate` some
+    sites publish alongside it (confirmed live on
+    `accessdata.fda.gov` — see `robots_policy.py`), slow requests to
+    that host down to whatever it asks for, if that's slower than
+    `http.requests_per_second`. robots.txt is a floor on politeness,
+    never a ceiling config can race past — it only ever makes a host
+    *more* cautious than configured, never less.
+  - The non-standard `Visiting-hours` (also confirmed live on
+    `accessdata.fda.gov`: `23:00EDT-05:00EDT`) refuses to fetch from
+    that host outside its declared window at all, in whatever timezone
+    it declares (properly DST-aware via `zoneinfo`, not a fixed UTC
+    offset).
+
+  None of this is hardcoded to any particular host anywhere in code —
+  whatever a host's own robots.txt says is what applies to it,
+  dynamically, for any source that talks to it; a host with no such
+  directives (most of them) is completely unaffected.
+
+  **`Visiting-hours` specifically is surfaced upstream, not just enforced
+  locally.** A source whose own `estimate()` checks it
+  (`clearances_510k.py`/`pma.py`/`hde.py` today —
+  `self.http.next_available_at(origin)`) reports the next UTC time its
+  host reopens as `PreviewInfo.next_available_at`, which
+  `Manifest.write_estimate` persists locally and pushes to
+  `qara-reg-scraper-svc` (`PUT /v1/source-estimates/{regulation}/{source}`,
+  as `nextAvailableAt`) alongside every other estimate field, right after
+  every real run. This is what lets that service's own scheduler
+  (`SourceRetryScheduler`) avoid triggering a job that would immediately
+  no-op against a closed window — see its README for the other half of
+  this — and what it shows a human in the UI, instead of nothing that
+  looks any different from a source that's simply idle. A source with no
+  `Visiting-hours`-restricted host (the vast majority) always reports
+  `None` here; nothing changes for them.
 - **Rate limiting**: a conservative default of 1 request/second per host
   (`http.requests_per_second`), enforced by a blocking token bucket — not a
-  best-effort delay.
+  best-effort delay — unless robots.txt asks for slower (see above). See
+  "Pacing across sources and processes, not just within one" below for why
+  that alone isn't the whole story once more than one source talks to the
+  same host.
 - **Throttling responses**: a `429` or `5xx` triggers exponential backoff
   with jitter; if the server sends `Retry-After`, that value is used
   exactly rather than guessed at.
@@ -136,6 +185,131 @@ This is the concrete answer to "don't hide that this is a scraping tool":
   or contact the site owner — not to hide harder.
 - **Logging**: every HTTP request (method, URL, status, latency) is logged
   at INFO — nothing the tool does is invisible to its own operator either.
+
+### Pacing across sources and processes, not just within one
+
+The rate limiting described above (`http.requests_per_second`, robots.txt's
+`Hit-rate`/`Crawl-delay`) is enforced by `PoliteHttpClient`'s own
+`_TokenBucket` — but that bucket lives in memory, inside one
+`PoliteHttpClient` instance. Two things about how this tool is actually
+deployed make that too narrow on its own:
+
+1. **Multiple sources can share a host.** `fda:pma`, `fda:hde`, and
+   `fda:clearances_510k` all fetch PDFs from `accessdata.fda.gov` — three
+   different sources, three different `PoliteHttpClient` instances (`run`
+   constructs a fresh one per source, even within one invocation covering
+   several — see `cli.py`). Each paces *itself* correctly; none of them
+   know the others exist.
+2. **A triggered run is a brand-new process.** `qara-reg-scraper-svc`'s
+   `SourceRetryScheduler` doesn't run this CLI in one long-lived worker —
+   it launches a fresh Docker container per triggered source. In-memory
+   pacing state can't survive past one process, so even a single source's
+   own memory of "when did I last hit this host" is gone the moment its
+   run ends.
+
+**Confirmed live, 2026-08-30**: the scheduler triggered `fda:pma` and
+`fda:clearances_510k` within the same second — both shared the exact same
+`nextAvailableAt` (accessdata.fda.gov's `Visiting-hours` window opening),
+with `fda:hde` following two minutes later. Each of the three processes
+correctly paced itself to the host's own `Hit-rate: 30` (~2s/request) — but
+combined, three independent, uncoordinated streams meant the *aggregate*
+request rate was roughly triple what any one process intended. That tripped
+Akamai's own, separate "excessive requests" abuse detection — a real
+block, reproduced live, well inside the robots.txt-allowed window.
+**Complying with `Visiting-hours` does not make a client compliant with
+`Hit-rate` in aggregate across multiple uncoordinated processes** — they're
+different directives in the same robots.txt, and only coordinated pacing
+satisfies the second one.
+
+The fix (`origin_pacing.py`) moves the "when is this host next allowed to
+be hit" decision out of process memory and onto disk, in the same shared
+storage every scraper (and every separately-launched job container)
+already reads and writes documents through. A `filelock.FileLock` guards
+one small state file per host (`_origin_pacing/<host>.json`, alongside the
+robots.txt policy cache's own `_robots_cache/<host>.json` — see
+`robots_policy.py`) recording the next allowed request time. Every
+`PoliteHttpClient`, in every process, in every container, reserves its
+next slot against that one shared file before issuing a request to that
+host — regardless of which source it belongs to, or which process/
+container launched it. The lock is held only for the brief
+read-decide-write step, not for the wait itself, so one process's wait
+never blocks another's turn to check in.
+
+This only activates when `storage` resolves to a real local filesystem
+(`StorageBackend.local_root()` — true for `storage.backend: local`, which
+is what every job container in `qara_iac_local_docker` actually uses; a
+`FileLock` needs a real POSIX path, which S3/Azure Blob/SharePoint-backed
+storage can't provide). Without one, `PoliteHttpClient` falls back to the
+original in-memory-only `_TokenBucket` — correct for a single process with
+a single source, exactly as it always was. A corrupt state file, a lock
+timeout, or any other failure here degrades to "proceed immediately"
+rather than raising: a slower-than-strictly-necessary request, or in the
+worst case a collision this mechanism failed to prevent, is a far smaller
+problem than a scraper run failing outright over its own politeness
+bookkeeping.
+
+The pre-existing **same-source lock** (`config.lock_dir`, preventing two
+instances of *one* source running concurrently, e.g. an overrunning cron
+entry) had the identical gap: its default (`./.locks`) resolves inside
+whichever container happens to run a given invocation, never shared across
+the separately-launched containers this project actually deploys. `run`
+now auto-derives `lock_dir` from the same shared local storage root
+whenever it hasn't been explicitly overridden in `config.yaml` — a real
+override there always still wins.
+
+### Monitoring — `config.yaml`'s `monitoring:` section
+
+One shared home for how this tool reports its own activity, regardless of
+the specific mechanism — everything below lives under `monitoring:` in
+`config.yaml`.
+
+```yaml
+monitoring:
+  log:
+    session_log_dir: null       # see below — usually left unset
+    session_log_retention_days: 90
+  prometheus:
+    pushgateway_url: null       # reserved, not implemented yet
+```
+
+**`monitoring.log`** is a temporary stand-in for real metrics, until
+`monitoring.prometheus` exists: every CLI session (`run`/`reindex`) writes
+its own uniquely-named JSON-lines file into a shared directory — the exact
+same structured log content `--log`/`log_file` already produce (every
+`http_request` line included, each carrying an explicit `origin` field —
+see "Pacing across sources and processes" above), just durable and
+always-on rather than one human opting into one fixed sink for one run.
+That's enough to answer "queries per origin" and similar questions today
+via a plain
+
+```bash
+jq -s 'map(select(.message=="http_request")) | group_by(.origin) | map({origin: .[0].origin, count: length})' _session_logs/*.jsonl
+```
+
+against the shared directory, without waiting on Prometheus/Grafana to
+exist. Each file is named `<command>-<UTC timestamp>-<8 hex chars>.jsonl`
+(e.g. `run-20260830T070032Z-e639c60c.jsonl`); a sweep at the start of every
+session that has this enabled deletes anything older than
+`session_log_retention_days` (~3 months by default) — no separate cron or
+service needed.
+
+`session_log_dir: null` (the default) doesn't mean "disabled" the way most
+`null` defaults in this project do — it means "auto-derive from
+`storage.local.root`", the same "off, or auto-derived from local storage"
+pattern `lock_dir` uses just above, for the identical reason: every
+separately-launched job container needs to land these on the ONE shared
+volume they all mount, not their own ephemeral local disk. It only
+actually resolves to nothing when storage is a non-local backend (S3/
+Azure Blob/SharePoint) too — there's no shared local directory to use in
+that case, and this is skipped entirely rather than erroring. Set an
+explicit path to override the auto-derivation, same precedence every other
+setting in this file gets.
+
+**`monitoring.prometheus`** is reserved for later: since this CLI is a
+short-lived batch job, not a persistent server, the standard fit is a
+Pushgateway — this process pushes a counter per request at run-time,
+Prometheus scrapes the gateway, not this process. `pushgateway_url: null`
+is the only behavior today (disabled); nothing reads this field yet.
 
 ## Install
 
@@ -245,6 +419,24 @@ exponential backoff instead of ending the run immediately. See
 [`docs/retry-and-backlog-catchup.md`](docs/retry-and-backlog-catchup.md)
 for the full mechanism, including why `-1` is normalized to "unlimited"
 only after the CLI-flag/config precedence chain resolves, not before.
+
+`--retry-budget-minutes` also bounds the run itself, not just backoff
+between attempts — `BaseScraper`'s own `time_budget_minutes`, set from
+this exact value. An unlimited document count (`-1`) at a genuinely
+enforced per-request pace (a host's own robots.txt `Hit-rate`/
+`Crawl-delay` — see `http_client.py`/`robots_policy.py`) could otherwise
+mean one uninterruptible run lasting many hours instead of the roughly-N-
+minutes a retry-triggered job is actually meant to take before yielding
+back to the next scheduled attempt — confirmed live: `fda:pma`'s own
+`-1`-budget retry job, at `accessdata.fda.gov`'s correctly-honored 30s
+`Hit-rate`, was on track to run for something like 18 hours straight
+before this existed. Once elapsed, this stops the run exactly the same
+clean way `max_new_documents` running out does (`stop_reason=budget_reached`)
+— no per-scraper code needed, since every scraper already shares this
+check. A plain manual `run` (no `--retry-budget-minutes`, no
+`QARA_REG_SCRAPER_RETRY_BUDGET_MINUTES`) is completely unaffected — this
+only ever applies when something has actually opted an invocation into a
+retry budget in the first place.
 
 ### Knowing what a run is about to do
 
@@ -366,6 +558,32 @@ make run -- run --source fda:ecfr --quiet --log /dev/stderr   # nothing on stdou
 `--log` beats `config.yaml`'s `log_file` when both are set. Combine
 `--quiet --log <path>` for the classic "silent unless piped to a log file"
 cron shape.
+
+**`--debug`** (`run` and `reindex`) goes further than `--log` alone: every
+request also gets a second, fuller log line with the complete request AND
+response headers, plus a truncated response body — not just
+method/URL/status/elapsed. Forces this invocation's log level to `DEBUG`
+regardless of `config.yaml`'s `log_level`, and defaults the sink to
+`/dev/stderr` if `--log`/`log_file` isn't already set, so `--debug` alone
+works standalone:
+
+```bash
+make run -- run --source fda:clearances_510k --max-new-documents 1 --debug
+```
+
+```json
+{"ts": "2026-08-29T16:59:55Z", "level": "DEBUG", "logger": "qara_reg_scraper.http.fda:classification", "message": "http_request_detail", "method": "GET", "url": "https://api.fda.gov/device/classification.json", "status": 200, "request_headers": {"User-Agent": "...", "Accept": "...", "From": "..."}, "response_headers": {"Content-Type": "application/json; charset=utf-8", "Etag": "...", "..."}, "response_body": "{\n  \"meta\": {...}, ...(truncated at 2000 chars)"}
+```
+
+Meant for interactively troubleshooting one run (why a source is being
+blocked, what a new source's API actually returns, ...), not routine/cron
+use — the body snippets alone make for a much noisier log than plain
+`--log`. Binary bodies (PDFs, images) are never decoded as text, only
+their size and content-type are shown; text/JSON/XML/HTML bodies are
+truncated at 2000 characters (see `logging_setup.debug_body_snippet`).
+`qara-reg-scraper-svc` pushes (`ScraperServiceClient`, used by `reindex`
+and every real `run`'s own sync calls) get the same treatment, logged as
+`service_request_detail`.
 
 If you started a run and genuinely saw nothing at all print (not even
 `Storage backend: ...`, and you didn't pass `--quiet`), that's almost
@@ -573,14 +791,23 @@ enabled/disabled state — this file can drift, that command can't.
 | `fda`      | [`guidance`](docs/sources/fda/guidance.md)                     | FDA guidance documents                            | HTML scrape (`bs4`) — FDA has no public API for these |
 | `fda`      | [`classification`](docs/sources/fda/classification.md)        | Device product classification (product code → class/regulation) | openFDA `device/classification` (official JSON API) |
 | `fda`      | [`clearances_510k`](docs/sources/fda/clearances_510k.md)      | 510(k) / De Novo clearances **+ summary PDFs**    | openFDA `device/510k` (metadata) + accessdata.fda.gov (the actual PDF) |
+| `fda`      | [`pma`](docs/sources/fda/pma.md)                               | Premarket Approval (PMA) decisions **+ approval order letters** | openFDA `device/pma` (metadata) + accessdata.fda.gov (the actual PDF) |
+| `fda`      | [`hde`](docs/sources/fda/hde.md)                               | Humanitarian Device Exemption (HDE) approvals **+ approval order letters** | fda.gov listing page (HTML scrape, `bs4` — no openFDA endpoint exists) + accessdata.fda.gov (the actual PDF) |
 | `fda`      | [`recalls`](docs/sources/fda/recalls.md)                      | Device recalls / enforcement                      | openFDA `device/enforcement` (official JSON API) |
 | `fda`      | [`warning_letters`](docs/sources/fda/warning_letters.md)      | Warning letters, all centers                      | HTML scrape (`bs4`) — FDA has no public API for these |
 
 Roughly, the chain these sources cover: `fdc_act` (the statute) →
 `ecfr`/`guidance` (FDA's regulations and interpretation of it) →
 `classification` (product code → device class/regulation) →
-`clearances_510k` (the actual clearance records and predicate summaries
-for a given product code).
+`clearances_510k`/`pma`/`hde` (the actual approval-pathway decisions —
+510(k), PMA, and HDE respectively — and their supporting PDFs, for a
+given product code). Together these three decision sources cover every
+FDA device pathway that has its own public decision database; the
+"Exempt" and "De Novo" pathways (see `compliance-svc`'s own
+`market_path` table) don't — De Novo decisions are public but not via a
+scrapeable database found so far, and "Exempt" isn't a decision database
+at all, just a classification-level flag already captured by
+`classification`.
 
 This table (and `list-sources`) is also what gets pushed to
 `qara-reg-scraper-svc` so its own `GET /v1/sources` stays current without

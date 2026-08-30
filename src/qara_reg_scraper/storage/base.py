@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from pathlib import Path
 
 
 class StorageBackend(ABC):
@@ -47,3 +48,19 @@ class StorageBackend(ABC):
     def describe(self) -> str:
         """Human-readable identifier for logs (e.g. 'local:/data')."""
         return self.__class__.__name__
+
+    def local_root(self) -> Path | None:
+        """A real, on-disk filesystem path backing this storage, if one
+        exists — None for every backend by default (S3/Azure Blob/
+        SharePoint have no such thing; a network object store isn't a
+        filesystem). Only `LocalStorage` overrides this.
+
+        Exists for exactly one purpose: `filelock.FileLock` (used by
+        `origin_pacing.py` for cross-process request pacing, and by
+        cli.py's own per-source run lock) needs a real POSIX path to lock
+        against — it can't lock "an S3 key". Everything that wants
+        cross-process coordination should go through this rather than
+        assuming `storage` is local, so it degrades gracefully (falls
+        back to in-process-only behavior, never raises) for every other
+        backend."""
+        return None

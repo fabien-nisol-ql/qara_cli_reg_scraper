@@ -11,6 +11,9 @@ config.yaml
 data/
 .locks/
 logs/*.log
+# A local `run --log log.log`/`--debug` invocation's own output - never
+# committed, same reasoning as logs/*.log above.
+/log.log
 
 .pytest_cache/
 .ruff_cache/

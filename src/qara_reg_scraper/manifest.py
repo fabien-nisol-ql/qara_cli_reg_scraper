@@ -435,13 +435,20 @@ class Manifest:
 
     def write_estimate(self, info: PreviewInfo) -> None:
         """Persist the latest known 'what's left to do' snapshot for this
-        source — total_available/already_known/remaining/note, as of right
-        now. Called by the CLI right after a real run finishes (it calls
-        scraper.estimate() once more); overwrites whatever was there
-        before, since this is current state, not run history. `summary`
-        (DB-less) and `status`/`reindex` (DB-backed, via this same file)
-        both read it so "what's left" doesn't need a live re-query every
-        time someone just wants to look."""
+        source — total_available/already_known/remaining/note/
+        next_available_at, as of right now. Called by the CLI right after
+        a real run finishes (it calls scraper.estimate() once more);
+        overwrites whatever was there before, since this is current
+        state, not run history. `summary` (DB-less) and `status`/`reindex`
+        (DB-backed, via this same file) both read it so "what's left"
+        doesn't need a live re-query every time someone just wants to
+        look. `next_available_at` specifically (None for most sources —
+        see PreviewInfo's own docstring) is what lets
+        qara-reg-scraper-svc's SourceRetryScheduler avoid triggering a job
+        that would immediately no-op against a host's own declared
+        robots.txt Visiting-hours, and what it surfaces to a human in the
+        UI — see that service's README for the other half of this."""
+        next_available_at = info.next_available_at.isoformat() if info.next_available_at else None
         payload = {
             "regulation": self.regulation,
             "source": self.source,
@@ -450,6 +457,8 @@ class Manifest:
             "already_known": info.already_known,
             "remaining": info.remaining,
             "note": info.note,
+            "next_available_at": next_available_at,
+            "next_available_note": info.next_available_note,
         }
         self.storage.write_text(estimate_path(self.regulation, self.source), json.dumps(payload, indent=2))
         if self._service_client is not None:
@@ -464,6 +473,8 @@ class Manifest:
                     "alreadyKnown": payload["already_known"],
                     "remaining": payload["remaining"],
                     "note": payload["note"],
+                    "nextAvailableAt": next_available_at,
+                    "nextAvailableNote": payload["next_available_note"],
                 },
             )
 

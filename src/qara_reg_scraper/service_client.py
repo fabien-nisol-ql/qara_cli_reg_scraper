@@ -26,7 +26,7 @@ import requests
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import ServiceSettings
-from .logging_setup import get_logger, log_extra
+from .logging_setup import debug_body_snippet, get_logger, log_extra
 
 log = get_logger("service_client")
 
@@ -91,6 +91,24 @@ class ScraperServiceClient:
 
         def _do() -> Any:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+            # Every request (success or failure — service_sync_failed above
+            # only fires for the latter, and only after retries are
+            # exhausted) at DEBUG level, gated the same way and for the same
+            # reason as http_client.py's PoliteHttpClient — see
+            # logging_setup.debug_body_snippet.
+            if log.isEnabledFor(logging.DEBUG):
+                log_extra(
+                    log,
+                    logging.DEBUG,
+                    "service_request_detail",
+                    operation=operation, method=method, url=url,
+                    request_body=kwargs.get("json"),
+                    status=response.status_code,
+                    response_headers=dict(response.headers),
+                    response_body=debug_body_snippet(
+                        response.content, response.headers.get("Content-Type", "")
+                    ),
+                )
             if response.status_code in _RETRYABLE_STATUS_CODES:
                 raise _RetryableStatus(response)
             response.raise_for_status()

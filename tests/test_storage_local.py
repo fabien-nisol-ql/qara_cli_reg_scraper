@@ -52,3 +52,11 @@ def test_write_is_overwritten_atomically(tmp_path):
     assert storage.read_bytes("f.txt") == b"second"
     # no leftover .tmp file
     assert not (tmp_path / "f.txt.tmp").exists()
+
+
+def test_local_root_is_the_real_filesystem_root(tmp_path):
+    """origin_pacing.py and cli.py's own same-source lock both depend on
+    this returning a real, lockable filesystem path for LocalStorage -
+    unlike StorageBackend's own default (None, see its docstring)."""
+    storage = LocalStorage(root=str(tmp_path))
+    assert storage.local_root() == tmp_path.resolve()

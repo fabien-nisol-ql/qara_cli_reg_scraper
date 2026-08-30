@@ -217,6 +217,48 @@ def test_budget_exhausted_after_max_new_documents(tmp_path):
         scraper._consume_budget()
 
 
+def test_time_budget_none_by_default_never_exhausts_on_its_own(tmp_path):
+    """No time_budget_minutes passed - matches every existing caller,
+    unaffected by this feature entirely."""
+    _storage, _manifest, scraper = make_scraper(tmp_path, max_new_documents=1000)
+    assert scraper._budget_exhausted() is False
+
+
+def test_time_budget_exhausted_once_the_deadline_has_passed(tmp_path, monkeypatch):
+    """The actual point: a retry-triggered job with an effectively
+    unlimited document budget (max_new_documents=-1/None, matching
+    ScrapeJobService#triggerRetry) must still stop cleanly once real
+    wall-clock time runs out - confirmed live: at a correctly-enforced
+    30s/request pace (accessdata.fda.gov's own robots.txt Hit-rate), an
+    unbounded document count meant one job running for many hours before
+    this existed."""
+    _storage, _manifest, scraper = make_scraper(tmp_path, time_budget_minutes=10)
+    assert scraper._budget_exhausted() is False  # deadline hasn't passed yet
+
+    # Simulate 10+ minutes having elapsed without actually sleeping.
+    monkeypatch.setattr("time.monotonic", lambda: scraper._deadline + 1)
+    assert scraper._budget_exhausted() is True
+
+
+def test_time_budget_raises_budget_exhausted_from_consume_budget_too(tmp_path, monkeypatch):
+    """_consume_budget (called after every successful fetch) must also
+    respect the deadline, not just the pre-fetch _budget_exhausted()
+    check - same BudgetExhausted, same clean stop_reason=budget_reached
+    handling every scraper already has for the document-count case."""
+    _storage, _manifest, scraper = make_scraper(tmp_path, time_budget_minutes=10)
+    monkeypatch.setattr("time.monotonic", lambda: scraper._deadline + 1)
+    with pytest.raises(BudgetExhausted):
+        scraper._consume_budget()
+
+
+def test_time_budget_and_document_budget_are_independent_triggers(tmp_path, monkeypatch):
+    """Whichever one fires first wins - both are checked, neither
+    suppresses the other."""
+    _storage, _manifest, scraper = make_scraper(tmp_path, max_new_documents=1000, time_budget_minutes=10)
+    monkeypatch.setattr("time.monotonic", lambda: scraper._deadline + 1)
+    assert scraper._budget_exhausted() is True  # time budget alone is enough, despite max_new_documents=1000
+
+
 def test_process_candidates_skips_known_respects_budget_and_hard_stop(tmp_path):
     _storage, manifest, scraper = make_scraper(tmp_path, max_new_documents=2)
     # Pre-populate "known-1" so it's skipped without any "fetch" call.

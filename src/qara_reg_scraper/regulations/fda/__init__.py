@@ -12,6 +12,8 @@ from .clearances_510k import Clearances510kScraper
 from .ecfr import EcfrScraper
 from .fdc_act import FdcActScraper
 from .guidance import GuidanceScraper
+from .hde import HdeScraper
+from .pma import PmaScraper
 from .recalls import RecallsScraper
 from .warning_letters import WarningLettersScraper
 
@@ -25,6 +27,8 @@ FDA_SOURCES: dict[str, type[BaseScraper]] = {
     RecallsScraper.name: RecallsScraper,
     ClassificationScraper.name: ClassificationScraper,
     FdcActScraper.name: FdcActScraper,
+    PmaScraper.name: PmaScraper,
+    HdeScraper.name: HdeScraper,
 }
 
 __all__ = ["FDA_SOURCES", "BaseScraper"]

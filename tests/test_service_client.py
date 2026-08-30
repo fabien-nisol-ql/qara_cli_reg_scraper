@@ -137,3 +137,42 @@ def test_missing_base_url_raises_immediately():
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+@responses.activate
+def test_debug_detail_not_logged_at_info_level(caplog):
+    responses.add(
+        responses.GET, f"{BASE_URL}/v1/status",
+        json=[{"regulation": "fda", "source": "ecfr"}], status=200,
+    )
+    client = ScraperServiceClient(fast_settings())
+    with caplog.at_level("INFO", logger="qara_reg_scraper.service_client"):
+        client.get_status(["fda:ecfr"])
+
+    assert "service_request_detail" not in [r.getMessage() for r in caplog.records]
+
+
+@responses.activate
+def test_debug_detail_includes_request_body_and_response_headers_at_debug_level(caplog):
+    """Same detail level as PoliteHttpClient's own --debug output (see
+    test_http_client.py) — this client's own requests (pushes to
+    qara-reg-scraper-svc) are just as worth --debug's full detail as the
+    outbound scraping requests are."""
+    responses.add(
+        responses.POST, f"{BASE_URL}/v1/events",
+        json={"success": True, "status": 200, "data": {"documentId": "d1"}},
+        status=200,
+        headers={"X-Server": "reg-scraper-svc"},
+    )
+    client = ScraperServiceClient(fast_settings())
+    with caplog.at_level("DEBUG", logger="qara_reg_scraper.service_client"):
+        client.record_event({"documentId": "d1", "event": "new"})
+
+    detail = next(r for r in caplog.records if r.getMessage() == "service_request_detail")
+    fields = detail.extra_fields
+    assert fields["operation"] == "record_event"
+    assert fields["method"] == "POST"
+    assert fields["request_body"] == {"documentId": "d1", "event": "new"}
+    assert fields["status"] == 200
+    assert fields["response_headers"]["X-Server"] == "reg-scraper-svc"
+    assert '"documentId"' in fields["response_body"]

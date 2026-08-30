@@ -13,6 +13,8 @@ from qara_reg_scraper import cli as cli_module
 from qara_reg_scraper.base_scraper import BaseScraper, PreviewInfo
 from qara_reg_scraper.config import (
     LocalStorageSettings,
+    MonitoringLogSettings,
+    MonitoringSettings,
     RegulationSettings,
     ServiceSettings,
     Settings,
@@ -210,6 +212,70 @@ def test_max_new_documents_zero_is_respected_not_treated_as_unset(tmp_path, monk
     settings = make_settings(tmp_path, global_max_new=25)
     scraper = run_cli(monkeypatch, settings, ["run", "--source", "fda:ecfr", "--max-new-documents", "0"])
     assert scraper.max_new_documents == 0
+
+
+def test_default_lock_dir_moves_onto_shared_local_storage(tmp_path, monkeypatch):
+    """config.lock_dir's own default ("./.locks") resolves inside
+    whichever container happens to run a given invocation - never shared
+    across the separately-launched job containers qara-reg-scraper-svc
+    actually deploys (see cli.py's own comment at the lock_dir
+    auto-derivation site). Left at that default, the same-source lock
+    should instead land on the same shared storage.local.root every job
+    container already mounts - proven here by NOT overriding lock_dir at
+    all (unlike every other test in this file's make_settings(), which
+    always does) and checking the lock file actually appears under
+    storage's own tmp_path, not some unrelated "./.locks"."""
+    settings = Settings(
+        storage=StorageSettings(backend="local", local=LocalStorageSettings(root=str(tmp_path))),
+        service=ServiceSettings(),
+        regulations={"fda": RegulationSettings(sources={"ecfr": SourceSettings(enabled=True)})},
+        # lock_dir intentionally NOT set - exercising the real default.
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(cli_module.app, ["run", "--source", "fda:ecfr", "--no-estimate"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".locks" / "fda" / "ecfr.lock").exists()
+
+
+def test_default_session_log_dir_also_moves_onto_shared_local_storage(tmp_path, monkeypatch):
+    """Same reasoning, same auto-derivation pattern as lock_dir just
+    above - monitoring.log.session_log_dir left unset should land under
+    storage's own root too, not be silently disabled."""
+    settings = Settings(
+        storage=StorageSettings(backend="local", local=LocalStorageSettings(root=str(tmp_path))),
+        service=ServiceSettings(),
+        regulations={"fda": RegulationSettings(sources={"ecfr": SourceSettings(enabled=True)})},
+        # monitoring.log.session_log_dir intentionally NOT set.
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(cli_module.app, ["run", "--source", "fda:ecfr", "--no-estimate"])
+
+    assert result.exit_code == 0, result.output
+    session_logs = list((tmp_path / "_session_logs").glob("run-*.jsonl"))
+    assert len(session_logs) == 1
+
+
+def test_explicit_session_log_dir_overrides_the_local_storage_default(tmp_path, monkeypatch):
+    explicit_dir = tmp_path / "somewhere-else"
+    settings = Settings(
+        storage=StorageSettings(backend="local", local=LocalStorageSettings(root=str(tmp_path / "storage"))),
+        service=ServiceSettings(),
+        regulations={"fda": RegulationSettings(sources={"ecfr": SourceSettings(enabled=True)})},
+        monitoring=MonitoringSettings(log=MonitoringLogSettings(session_log_dir=str(explicit_dir))),
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(cli_module.app, ["run", "--source", "fda:ecfr", "--no-estimate"])
+
+    assert result.exit_code == 0, result.output
+    assert list(explicit_dir.glob("run-*.jsonl"))
+    assert not (tmp_path / "storage" / "_session_logs").exists()
 
 
 def test_source_without_colon_is_rejected(tmp_path, monkeypatch):
@@ -423,6 +489,44 @@ def test_no_log_flag_means_no_log_file_at_all(tmp_path, monkeypatch):
     # Nothing under tmp_path should have been created for logging purposes
     # beyond the manifest itself — no stray log file anywhere.
     assert not list(tmp_path.glob("*.log"))
+
+
+def test_debug_flag_forces_debug_level_regardless_of_config_log_level(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    settings.log_level = "WARNING"  # what --debug must override
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+    log_path = tmp_path / "debug.log"
+
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--source", "fda:ecfr", "--no-estimate", "--log", str(log_path), "--debug"],
+    )
+
+    assert result.exit_code == 0, result.output
+    import logging
+
+    assert logging.getLogger("qara_reg_scraper").level == logging.DEBUG
+
+
+def test_debug_flag_without_explicit_log_still_writes_somewhere(tmp_path, monkeypatch):
+    """--debug alone (no --log, no config.yaml log_file) must not be a
+    silent no-op — see _effective_logging's own docstring: it defaults
+    the sink to stderr specifically so this works standalone."""
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(
+        cli_module.app, ["run", "--source", "fda:ecfr", "--no-estimate", "--debug"]
+    )
+
+    assert result.exit_code == 0, result.output
+    import logging
+
+    root = logging.getLogger("qara_reg_scraper")
+    assert root.level == logging.DEBUG
+    assert not isinstance(root.handlers[0], logging.NullHandler)
 
 
 def test_real_run_persists_a_what_is_left_estimate(tmp_path, monkeypatch):
@@ -692,3 +796,26 @@ def test_retry_budget_minutes_flag_overrides_config(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert _HardStopThenSucceedScraper.call_count == 2
     assert sleep_calls == [60]
+
+
+def test_retry_budget_minutes_also_becomes_the_scrapers_own_time_budget(tmp_path, monkeypatch):
+    """The actual fix this was built for: retry_budget_minutes isn't just
+    the post-HardStop backoff cap anymore — it's also passed straight
+    through as time_budget_minutes on the scraper itself, so a
+    retry-triggered job with an unlimited document budget
+    (ScrapeJobService#triggerRetry's own --max-new-documents -1) still
+    stops cleanly after roughly that many minutes of real wall-clock work,
+    instead of running for as long as an unbounded document count would
+    otherwise take against a correctly rate-limited host."""
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+    _RecordingScraper.instances.clear()
+
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--source", "fda:ecfr", "--no-estimate", "--retry-budget-minutes", "10"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _RecordingScraper.instances[-1]._deadline is not None

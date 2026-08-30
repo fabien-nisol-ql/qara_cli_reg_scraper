@@ -72,6 +72,12 @@ ENDPOINT = "https://api.fda.gov/device/510k.json"
 # regulations.fda.sources.clearances_510k.lookback_days sets one — see
 # BaseScraper.lookback_days / effective_lookback_days below.
 DEFAULT_LOOKBACK_DAYS = 30
+# Where the summary PDFs actually live — any path under this origin is
+# governed by the same robots.txt (Hit-rate/Visiting-hours, see
+# http_client.py/robots_policy.py), so the origin alone is enough to ask
+# PoliteHttpClient.next_available_at whether this whole source is
+# currently inside its host's declared crawling window.
+ACCESSDATA_ORIGIN = "https://www.accessdata.fda.gov"
 
 
 class Clearances510kScraper(BaseScraper):
@@ -140,6 +146,8 @@ class Clearances510kScraper(BaseScraper):
         return PreviewInfo(
             total_available=len(k_numbers), already_known=known,
             note=f"counts clearances decided in the last {self.effective_lookback_days} days only",
+            next_available_at=self.http.next_available_at(ACCESSDATA_ORIGIN),
+            next_available_note=self.http.visiting_hours_description(ACCESSDATA_ORIGIN),
         )
 
     def _save_metadata(self, k_number: str, record: dict) -> None:

@@ -219,6 +219,27 @@ def test_write_estimate_overwrites_the_previous_snapshot(tmp_path):
     assert payload["remaining"] == 15
 
 
+def test_write_estimate_persists_next_available_at_when_set(tmp_path):
+    from datetime import UTC, datetime
+
+    storage, manifest = make_manifest(tmp_path)
+    when = datetime(2026, 8, 30, 3, 0, tzinfo=UTC)
+    manifest.write_estimate(PreviewInfo(total_available=35, already_known=10, next_available_at=when))
+
+    payload = json.loads(storage.read_text(estimate_path("fda", "ecfr")))
+    assert payload["next_available_at"] == when.isoformat()
+
+
+def test_write_estimate_next_available_at_defaults_to_none(tmp_path):
+    """The vast majority of sources never set this — must serialize as a
+    plain null, not be omitted or raise."""
+    storage, manifest = make_manifest(tmp_path)
+    manifest.write_estimate(PreviewInfo(total_available=35, already_known=10))
+
+    payload = json.loads(storage.read_text(estimate_path("fda", "ecfr")))
+    assert payload["next_available_at"] is None
+
+
 def test_unsafe_document_id_rejected(tmp_path):
     _storage, manifest = make_manifest(tmp_path)
 
@@ -318,6 +339,21 @@ def test_write_estimate_pushes_put_source_estimate(tmp_path):
     assert (regulation, source) == ("fda", "ecfr")
     assert dto["totalAvailable"] == 35
     assert dto["remaining"] == 25
+    assert dto["nextAvailableAt"] is None
+
+
+def test_write_estimate_pushes_next_available_at_camel_cased(tmp_path):
+    from datetime import UTC, datetime
+
+    storage = LocalStorage(root=str(tmp_path))
+    client = _FakeServiceClient()
+    manifest = Manifest(storage, "fda", "pma", run_id="run-1", service_client=client)
+    client.calls.clear()
+    when = datetime(2026, 8, 30, 3, 0, tzinfo=UTC)
+
+    manifest.write_estimate(PreviewInfo(total_available=5, already_known=1, next_available_at=when))
+    _regulation, _source, dto = client.calls[0][1]
+    assert dto["nextAvailableAt"] == when.isoformat()
 
 
 def test_no_service_client_never_calls_anything(tmp_path):

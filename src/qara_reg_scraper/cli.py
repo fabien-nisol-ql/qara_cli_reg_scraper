@@ -29,7 +29,12 @@ from rich.table import Table
 from .config import Settings, get_settings, get_source_settings, normalize_unlimited
 from .heartbeat import Heartbeat
 from .http_client import PoliteHttpClient
-from .logging_setup import configure_logging, ensure_unbuffered_stdout, get_logger
+from .logging_setup import (
+    configure_logging,
+    configure_session_log,
+    ensure_unbuffered_stdout,
+    get_logger,
+)
 from .manifest import Manifest
 from .regulations import REGULATION_REGISTRY, UnknownSource, all_qualified_names, resolve
 from .service_client import ScraperServiceClient, ServiceSyncError
@@ -55,6 +60,59 @@ _LOG_OPTION = typer.Option(
     "internal log output at all; the human-oriented progress lines below are "
     "separate and unaffected by this.",
 )
+# Shared `--debug` option (used by both `run` and `reindex`, same as
+# _LOG_OPTION above) — see _effective_logging()'s own docstring for what
+# this actually changes.
+_DEBUG_OPTION = typer.Option(
+    False, "--debug",
+    help="Log every HTTP request AND response in full — method, URL, status, full request/"
+    "response headers, and a truncated body snippet (see logging_setup.debug_body_snippet) "
+    "— not just the terse one-line-per-request summary --log alone gives you. Forces this "
+    "invocation's log level to DEBUG regardless of config.yaml's log_level, and — unless "
+    "--log/config.yaml's log_file is already set — defaults the internal log sink to stderr, "
+    "so --debug works standalone without also needing --log. Meant for interactively "
+    "troubleshooting one run (e.g. why a source is being blocked, or what a new source's API "
+    "actually returns), not routine/cron use — the body snippets alone make for a much "
+    "noisier log than plain --log.",
+)
+
+
+def _effective_logging(settings: Settings, log_file: Path | None, debug: bool) -> None:
+    """Resolves --log/--debug/config.yaml's log_level/log_file into one
+    configure_logging() call, shared by `run` and `reindex`. --debug wins
+    the level (DEBUG beats whatever config.yaml's log_level says) but not
+    the sink — --log/config.yaml's log_file still wins there if either is
+    set, since a human who bothered to configure a specific sink almost
+    certainly wants --debug's extra detail to land there too, not silently
+    redirected to stderr instead."""
+    level = "DEBUG" if debug else settings.log_level
+    sink = str(log_file) if log_file else settings.log_file
+    if sink is None and debug:
+        sink = "/dev/stderr"
+    configure_logging(level, sink=sink)
+
+
+def _configure_session_log(settings: Settings, storage, command: str) -> None:
+    """Adds this session to `monitoring.log.session_log_dir` (or its
+    storage-derived default — see `MonitoringLogSettings`'s own
+    docstring), if one resolves. Must be called AFTER `_effective_logging`
+    (whose `configure_logging()` clears every handler from scratch — this
+    only ever ADDS one) and after `storage` exists — shared by `run` and
+    `reindex`, same precedent as `_effective_logging` itself.
+
+    A no-op, not an error, whenever nothing resolves: an explicit
+    `monitoring.log.session_log_dir: null` with a non-local storage
+    backend means there's genuinely nowhere shared to put this — same
+    "off unless configured, or auto-derived from local storage" pattern
+    `lock_dir` follows just below in `run`."""
+    log_dir_setting = settings.monitoring.log.session_log_dir
+    log_dir = Path(log_dir_setting) if log_dir_setting else None
+    if log_dir is None:
+        local_root = storage.local_root()
+        if local_root is not None:
+            log_dir = local_root / "_session_logs"
+    if log_dir is not None:
+        configure_session_log(log_dir, command, settings.monitoring.log.session_log_retention_days)
 
 
 def _resolve_sources(settings: Settings, requested: str) -> list[str]:
@@ -176,7 +234,7 @@ def _print_preview(
         effective_lookback = lookback_days if lookback_days is not None else source_settings.lookback_days
         http_settings = settings.http.model_copy(update={"requests_per_second": effective_rps})
         heartbeat.set_activity(f"computing the preview estimate for {qualified_name}")
-        with PoliteHttpClient(http_settings, qualified_name) as http:
+        with PoliteHttpClient(http_settings, qualified_name, storage=storage) as http:
             manifest = Manifest(storage, regulation, name)
             scraper = scraper_cls(http, manifest, max_new_documents=effective_max, lookback_days=effective_lookback)
             info = scraper.estimate()
@@ -355,6 +413,7 @@ def run(
         "the env var when it launches a job; a human rarely needs this flag directly.",
     ),
     log_file: Path | None = _LOG_OPTION,
+    debug: bool = _DEBUG_OPTION,
 ) -> None:
     """Scrape one source (or many, per --source) and write manifests.
 
@@ -376,7 +435,7 @@ def run(
     pushes it to qara-reg-scraper-svc, the `status` command's source).
     """
     settings = get_settings()
-    configure_logging(settings.log_level, sink=str(log_file) if log_file else settings.log_file)
+    _effective_logging(settings, log_file, debug)
     # CLI flag beats config.yaml/env, same precedence as log_file/--log
     # just above. None (the default on both) means zero retries — today's
     # exact behavior, unless something (typically the service, via
@@ -393,6 +452,7 @@ def run(
     storage = build_storage_backend(settings.storage)
     if not quiet:
         console.print(f"Storage backend: {storage.describe()}")
+    _configure_session_log(settings, storage, "run")
 
     # One client, reused across every source in this invocation — None
     # means "not reporting to qara-reg-scraper-svc" (manifests are still
@@ -434,7 +494,24 @@ def run(
         if preview:
             raise typer.Exit(0)
 
+        # Same reasoning as origin_pacing.py's own module docstring, applied
+        # to this pre-existing same-source lock: config.lock_dir's own
+        # default ("./.locks") resolves inside whichever container happens
+        # to run this invocation — never shared, since qara-reg-scraper-svc
+        # launches a brand new job container per triggered run. That leaves
+        # the "prevent two instances scraping the same source concurrently"
+        # guarantee this lock exists for working only within one long-lived
+        # process, not across the separately-launched containers that are
+        # this project's actual deployment shape. Auto-derive from the same
+        # shared storage `origin_pacing.py` uses instead — but only when the
+        # user hasn't explicitly configured their own lock_dir (a real
+        # config.yaml override always wins, same precedence every other
+        # setting in this file gets).
         lock_dir = Path(settings.lock_dir)
+        if settings.lock_dir == "./.locks":
+            local_root = storage.local_root()
+            if local_root is not None:
+                lock_dir = local_root / ".locks"
 
         had_errors = False
         for qualified_name in qualified_names:
@@ -536,7 +613,7 @@ def run(
                     while True:
                         heartbeat_activity = f"scraping {qualified_name}"
                         hb.set_activity(heartbeat_activity)
-                        with PoliteHttpClient(http_settings, qualified_name) as http:
+                        with PoliteHttpClient(http_settings, qualified_name, storage=storage) as http:
                             # `manifest` is constructed INSIDE this try (not
                             # above it) so a sync failure during its own initial
                             # "running" push (see Manifest.__init__) is caught
@@ -556,6 +633,7 @@ def run(
                                     max_new_documents=max_new,
                                     recheck_after_days=effective_recheck,
                                     lookback_days=effective_lookback,
+                                    time_budget_minutes=effective_retry_budget_minutes,
                                 )
                                 summary = scraper.run()
                             except Exception as e:  # noqa: BLE001 - safety net: a scraper's own
@@ -730,6 +808,7 @@ def reindex(
         help="'all', '<regulation>:all', or '<regulation>:<source>', comma-separated for multiple — same as `run`.",
     ),
     log_file: Path | None = _LOG_OPTION,
+    debug: bool = _DEBUG_OPTION,
 ) -> None:
     """Push each source's *current* manifest state (documents, latest run,
     estimate) to qara-reg-scraper-svc — recovers/backfills its database if
@@ -740,12 +819,13 @@ def reindex(
     from .sync import sync as do_sync
 
     settings = get_settings()
-    configure_logging(settings.log_level, sink=str(log_file) if log_file else settings.log_file)
+    _effective_logging(settings, log_file, debug)
     if not settings.service.base_url:
         console.print("[red]service.base_url is not set (QARA_REG_SCRAPER_SERVICE__BASE_URL).[/red]")
         raise typer.Exit(2)
     qualified_names = _resolve_sources(settings, source)
     storage = build_storage_backend(settings.storage)
+    _configure_session_log(settings, storage, "reindex")
     client = ScraperServiceClient(settings.service)
     try:
         results = do_sync(client, storage, qualified_names)

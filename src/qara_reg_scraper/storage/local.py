@@ -46,3 +46,6 @@ class LocalStorage(StorageBackend):
 
     def describe(self) -> str:
         return f"local:{self.root}"
+
+    def local_root(self) -> Path | None:
+        return self.root

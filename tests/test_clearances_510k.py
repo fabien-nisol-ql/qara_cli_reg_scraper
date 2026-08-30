@@ -399,3 +399,35 @@ def test_run_continues_past_a_routine_404_to_the_next_clearance(tmp_path):
     assert summary.errors == 1  # K261111's PDF miss, recorded
     assert not storage.exists("fda/clearances_510k/documents/K261111/summary/current.pdf")
     assert storage.exists("fda/clearances_510k/documents/K261222/summary/current.pdf")  # reached and saved
+
+
+@responses.activate
+def test_estimate_reports_next_available_at_when_outside_visiting_hours(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from qara_reg_scraper.config import HttpSettings as _HttpSettings
+    from qara_reg_scraper.http_client import PoliteHttpClient as _PoliteHttpClient
+    from qara_reg_scraper.manifest import Manifest as _Manifest
+    from qara_reg_scraper.storage.local import LocalStorage as _LocalStorage
+
+    responses.add(responses.GET, ENDPOINT, json={"results": []}, status=200)
+    responses.add(
+        responses.GET, "https://www.accessdata.fda.gov/robots.txt",
+        body="User-agent: *\nVisiting-hours: 23:00EDT-05:00EDT\n", status=200,
+    )
+    monkeypatch.setattr(
+        "qara_reg_scraper.http_client.now_utc",
+        lambda: datetime(2026, 6, 15, 12, 0, tzinfo=UTC),  # outside the window
+    )
+
+    storage = _LocalStorage(root=str(tmp_path))
+    manifest = _Manifest(storage, "fda", "clearances_510k", run_id="test-run")
+    http = _PoliteHttpClient(
+        _HttpSettings(requests_per_second=1000, respect_robots_txt=True, max_retries=1),
+        "clearances_510k",
+    )
+    scraper = Clearances510kScraper(http, manifest)
+
+    info = scraper.estimate()
+
+    assert info.next_available_at == datetime(2026, 6, 16, 3, 0, tzinfo=UTC)

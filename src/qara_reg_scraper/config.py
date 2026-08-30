@@ -138,6 +138,62 @@ class ServiceSettings(BaseModel):
     timeout_seconds: float = 10.0
 
 
+class MonitoringLogSettings(BaseModel):
+    """`monitoring.log` — a per-session JSON-lines log file, written to a
+    shared directory every CLI invocation gets its own uniquely-named copy
+    in. Distinct from `log_file`/`--log` (a single fixed path, opt-in per
+    invocation, meant for interactively pointing one run's logs
+    somewhere): this is meant to be always-on and durable — a temporary
+    stand-in for real metrics (`monitoring.prometheus`, once that's wired
+    up — see README's "Pacing across sources and processes" section) that
+    at least makes "queries per origin" and similar questions answerable
+    via grep/jq today, without waiting on that. Every HTTP request
+    (including which origin — see http_client.py's explicit "origin"
+    field on its own "http_request" log line), retry, bot-detection
+    event, and everything else the internal structured logger already
+    emits ends up here."""
+
+    # None (the default) means disabled UNLESS storage resolves to a real
+    # local filesystem, in which case cli.py auto-derives this to
+    # `{storage_root}/_session_logs` — same "off, or auto-derived from
+    # local storage" pattern `lock_dir` already uses, for the same reason
+    # (every job container needs to land these on the ONE shared volume
+    # they all mount, not their own ephemeral local disk). Set explicitly
+    # to override that auto-derivation — an explicit value here always
+    # wins, same precedence every other setting in this file gets.
+    session_log_dir: str | None = None
+    # How long a session log file is kept before an automatic sweep
+    # deletes it — run at the start of every session that has session
+    # logging enabled, no separate cron/service needed. ~3 months by
+    # default; set lower/higher per how much shared disk this is worth
+    # spending, and how far back "let's analyze the logs" needs to reach.
+    session_log_retention_days: int = 90
+
+
+class MonitoringPrometheusSettings(BaseModel):
+    """`monitoring.prometheus` — reserved, not implemented yet. Placeholder
+    for the real fix `monitoring.log` above is a temporary stand-in for:
+    since this CLI is a short-lived batch job (not a persistent server), a
+    Prometheus Pushgateway is the standard pattern (the job pushes a
+    counter per request at run-time; Prometheus scrapes the gateway, not
+    this process). `pushgateway_url` will be the switch — None (the
+    default, and the only behavior today) means disabled, same "off
+    unless configured" precedent every other integration in this file
+    follows."""
+
+    pushgateway_url: str | None = None
+
+
+class MonitoringSettings(BaseModel):
+    """Everything under config.yaml's `monitoring:` key — one common,
+    shared home for how this tool reports its own activity across every
+    invocation, regardless of the specific mechanism. See `log`'s and
+    `prometheus`'s own docstrings for each."""
+
+    log: MonitoringLogSettings = Field(default_factory=MonitoringLogSettings)
+    prometheus: MonitoringPrometheusSettings = Field(default_factory=MonitoringPrometheusSettings)
+
+
 class SourceSettings(BaseModel):
     enabled: bool = True
     requests_per_second: float | None = None  # overrides HttpSettings default
@@ -220,6 +276,7 @@ class Settings(BaseSettings):
     http: HttpSettings = Field(default_factory=HttpSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     service: ServiceSettings = Field(default_factory=ServiceSettings)
+    monitoring: MonitoringSettings = Field(default_factory=MonitoringSettings)
     # Keyed by regulation code ("fda", "eu", ...) — open-ended on purpose,
     # see the module docstring. A regulation absent here just means "use
     # every source's defaults."

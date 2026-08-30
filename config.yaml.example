@@ -73,9 +73,12 @@ regulations:
         # the openFDA metadata) sits behind Akamai bot management and has
         # been observed blocking well-identified, rate-limited requests
         # from datacenter/cloud IPs — see the maintenance note in
-        # regulations/fda/clearances_510k.py. Slower than the global
-        # default on purpose: one request every 5s for this source
-        # specifically.
+        # regulations/fda/clearances_510k.py. This is only a fallback
+        # floor now, not the real governing rate: accessdata.fda.gov's own
+        # robots.txt publishes a Hit-rate (30s between requests, confirmed
+        # live) that PoliteHttpClient reads and applies automatically (see
+        # http_client.py's module docstring / robots_policy.py) — robots.txt
+        # always wins when it asks for slower than this value.
         requests_per_second: 0.2
         # Lower than the global default too — a bot-managed host is
         # exactly where you want a run to stop early and try again
@@ -109,6 +112,33 @@ regulations:
         # are far less frequent than the CFR's own churn, so this is
         # longer than ecfr's 14 days.
         recheck_after_days: 30
+      pma:
+        enabled: true
+        # Same accessdata.fda.gov posture as clearances_510k above (fallback
+        # floor — robots.txt's own Hit-rate is what actually governs the
+        # rate) — see regulations/fda/pma.py's module docstring.
+        requests_per_second: 0.2
+        max_new_documents_per_run: 10
+        # Same idea as clearances_510k.lookback_days above.
+        lookback_days: 30
+        # A missing order letter settles as not_applicable (not retried
+        # every run — roughly half of all supplements never get one
+        # posted, confirmed live) — but that looks identical, at the
+        # moment of the miss, to "not posted YET" (a very recent decision
+        # FDA hasn't caught up publishing). Without this, a genuinely-just-
+        # late one would stay wrong forever. 30 days gives FDA's own
+        # publishing lag real room before checking again.
+        recheck_after_days: 30
+      hde:
+        enabled: true
+        # Same accessdata.fda.gov posture as pma/clearances_510k above
+        # (fallback floor; robots.txt's own Hit-rate is what governs) —
+        # the listing page itself (fda.gov, not accessdata.fda.gov) has
+        # its own, separate Crawl-delay, also honored automatically.
+        requests_per_second: 0.2
+        max_new_documents_per_run: 10
+        # Same reasoning as pma's own recheck_after_days above.
+        recheck_after_days: 30
   # eu:
   #   sources:
   #     ivdr:
@@ -129,6 +159,28 @@ log_level: INFO
 # <path>`, which beat this when both are set.
 # log_file: "/dev/stderr"
 lock_dir: "./.locks"
+
+# How this tool reports its own activity — see README's "Monitoring" section
+# for the full story. Everything here is optional; leaving the whole
+# section out is equivalent to every value shown here (all defaults).
+monitoring:
+  log:
+    # A directory to write one JSON-lines log file per CLI session into —
+    # a temporary stand-in for real metrics (monitoring.prometheus below),
+    # answering questions like "queries per origin" via grep/jq today.
+    # null (the default) auto-derives this to storage.local.root's own
+    # "_session_logs" subdirectory when storage.backend is "local" (same
+    # "off, or auto-derived from local storage" pattern lock_dir above
+    # would use too, if left unset) — set an explicit path to override.
+    session_log_dir: null
+    # How long a session log file is kept before an automatic sweep
+    # deletes it (run at the start of every session, no separate cron
+    # needed). ~3 months by default.
+    session_log_retention_days: 90
+  prometheus:
+    # Reserved, not implemented yet — see README. null is the only
+    # behavior today.
+    pushgateway_url: null
 
 # How many *new* documents a single run of a single source will fetch
 # before stopping cleanly and leaving the rest of the backlog for
