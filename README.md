@@ -798,6 +798,11 @@ enabled/disabled state — this file can drift, that command can't.
 | `eu`       | [`mdr`](docs/sources/eu/mdr.md)                                | Regulation (EU) 2017/745 (MDR), consolidated full text (one document) | EUR-Lex (official) — consolidated-version discovery + HTML fetch |
 | `eu`       | [`ivdr`](docs/sources/eu/ivdr.md)                              | Regulation (EU) 2017/746 (IVDR), consolidated full text (one document) | EUR-Lex (official) — consolidated-version discovery + HTML fetch |
 | `eu`       | [`mdcg_guidance`](docs/sources/eu/mdcg_guidance.md)            | MDCG guidance and other MDR/IVDR guidance         | HTML scrape (`bs4`) — the Commission has no public API for these |
+| `ca`       | [`mdr`](docs/sources/ca/mdr.md)                                | Medical Devices Regulations (SOR/98-282), full text (one document) | Justice Laws Website (official, fixed URL) |
+| `ca`       | [`food_and_drugs_act`](docs/sources/ca/food_and_drugs_act.md)  | Food and Drugs Act (R.S.C., 1985, c. F-27), full text (one document) | Justice Laws Website (official, fixed URL) |
+| `ca`       | [`mdall`](docs/sources/ca/mdall.md)                            | Medical Devices Active Licence Listing (MDALL), active device licences | Health Canada API (official, documented, single-request bulk JSON) |
+| `ca`       | [`recalls`](docs/sources/ca/recalls.md)                        | Device recalls and safety alerts                  | Health Canada open dataset (official, single-request bulk JSON, filtered) |
+| `ca`       | [`guidance`](docs/sources/ca/guidance.md)                      | Health Canada guidance documents for medical devices | HTML scrape (`bs4`) — Health Canada has no public API for these |
 
 Roughly, the chain these sources cover: `fdc_act` (the statute) →
 `ecfr`/`guidance` (FDA's regulations and interpretation of it) →
@@ -821,9 +826,11 @@ for exactly when that push happens.
 
 Nothing outside `regulations/` needs to change — config, storage, the
 service client, and the CLI are all regulation-agnostic. `regulations/eu/`
-already exists (`mdr`/`ivdr`/`mdcg_guidance` — see
-[`docs/sources/eu/`](docs/sources/eu/)); adding e.g. its next source
-works the same way a brand-new regulation namespace would:
+(`mdr`/`ivdr`/`mdcg_guidance` — see [`docs/sources/eu/`](docs/sources/eu/))
+and `regulations/ca/` (`mdr`/`food_and_drugs_act`/`mdall`/`recalls`/
+`guidance` — see [`docs/sources/ca/`](docs/sources/ca/)) already exist;
+adding e.g. either one's next source works the same way a brand-new
+regulation namespace would:
 
 1. Create `src/qara_reg_scraper/regulations/<code>/` if it doesn't exist
    yet (it does for `eu`).

@@ -23,6 +23,7 @@ database, and the CLI are all regulation-agnostic.
 from __future__ import annotations
 
 from ..base_scraper import BaseScraper
+from .ca import CA_SOURCES
 from .eu import EU_SOURCES
 from .fda import FDA_SOURCES
 
@@ -30,6 +31,7 @@ from .fda import FDA_SOURCES
 REGULATION_REGISTRY: dict[str, dict[str, type[BaseScraper]]] = {
     "fda": FDA_SOURCES,
     "eu": EU_SOURCES,
+    "ca": CA_SOURCES,
 }
 
 

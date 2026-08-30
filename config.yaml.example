@@ -155,6 +155,24 @@ regulations:
         recheck_after_days: 14
       mdcg_guidance:
         enabled: true
+  ca:
+    sources:
+      mdr:
+        enabled: true
+        # Same rationale as fda:ecfr's/eu:mdr's recheck_after_days above —
+        # without it, an amendment to the Medical Devices Regulations is
+        # never noticed once the first fetch happens.
+        recheck_after_days: 14
+      food_and_drugs_act:
+        enabled: true
+        # Same reasoning as ca:mdr's own recheck_after_days above.
+        recheck_after_days: 14
+      mdall:
+        enabled: true
+      recalls:
+        enabled: true
+      guidance:
+        enabled: true
 
 log_level: INFO
 # Where the internal structured (JSON) log — every HTTP request, retry,
