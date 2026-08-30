@@ -47,6 +47,13 @@ stable primary key:
 data/ca/mdall/documents/<original_licence_no>/current.json
 ```
 
+Each document's `canonical_url` is scoped to that one licence via the
+documented `?id=<licence_no>` filter (confirmed live: returns just that
+one record, not the whole catalog) — not the shared listing `ENDPOINT`
+every record's raw data comes from, which would otherwise make "browse
+original source" dump a reader into the entire ~35,600-record catalog
+instead of the one licence they were looking at.
+
 `source_metadata`: `original_licence_no`, `licence_status`,
 `appl_risk_class`, `licence_name`, `first_licence_status_dt`,
 `licence_type_cd`/`licence_type_desc`, `company_id`.

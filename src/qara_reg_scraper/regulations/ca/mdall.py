@@ -18,7 +18,14 @@ reference table" — no per-record network fetch needed, the record's
 already inline in the listing response (see `_save_record` below).
 
 `original_licence_no` is the record's own natural, stable primary key —
-no synthetic id needed.
+no synthetic id needed. The saved document's own `canonical_url` is
+scoped to that one licence via the documented `?id=<licence_no>` filter
+(confirmed live: returns just that one record, not the whole catalog) —
+same "the record's own filtered URL, not the shared listing" convention
+fda:classification.py/fda:recalls.py already use with openFDA's
+`search=` param. Without this, "browse original source" would dump a
+reader into the entire ~35,600-record catalog instead of the one licence
+they were actually looking at.
 
 This only covers *active* licences (`state=active`); the same API also
 serves `state=archived` (a licence that's since been cancelled/expired) —
@@ -44,7 +51,8 @@ import json
 from ...base_scraper import BaseScraper, BudgetExhausted, PreviewInfo
 from ...manifest import RunSummary
 
-ENDPOINT = "https://health-products.canada.ca/api/medical-devices/licence/?state=active&type=json&lang=en"
+BASE_URL = "https://health-products.canada.ca/api/medical-devices/licence/"
+ENDPOINT = f"{BASE_URL}?state=active&type=json&lang=en"
 
 
 class MdallScraper(BaseScraper):
@@ -110,7 +118,7 @@ class MdallScraper(BaseScraper):
         self.manifest.save_document(
             licence_no,
             content,
-            url=ENDPOINT,
+            url=f"{BASE_URL}?id={licence_no}&type=json&lang=en",
             title=record.get("licence_name"),
             ext="json",
             content_type="application/json",

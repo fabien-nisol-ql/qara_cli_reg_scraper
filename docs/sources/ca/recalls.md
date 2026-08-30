@@ -38,8 +38,13 @@ Keyed by `NID` directly — the record's own natural, stable primary key:
 data/ca/recalls/documents/<NID>/current.json
 ```
 
-`source_metadata`: `nid`, `canonical_url` (the human-readable recall
-page — captured for reference, not itself fetched), `issue`, `category`,
+Each document's `canonical_url` is the record's own dedicated
+human-readable recall page (`record["URL"]`) — not the shared
+`DATASET_URL` every record's raw data comes from, which would otherwise
+make "browse original source" dump a reader into the entire ~34,000-
+record dataset instead of the one recall they were looking at. Falls
+back to `DATASET_URL` only if a record is ever missing its own `URL`
+(not observed live). `source_metadata`: `nid`, `issue`, `category`,
 `recall_class`, `last_updated`, `archived`.
 
 ## Config knobs

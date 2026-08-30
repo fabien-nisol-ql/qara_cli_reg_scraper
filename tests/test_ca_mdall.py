@@ -52,6 +52,24 @@ def test_run_saves_one_document_per_licence(tmp_path):
     assert storage.exists("ca/mdall/documents/2/current.json")
     meta = json.loads(storage.read_text("ca/mdall/documents/1/current.meta.json"))
     assert meta["source_metadata"]["original_licence_no"] == 1
+
+
+@responses.activate
+def test_canonical_url_is_scoped_to_that_one_licence_not_the_whole_catalog(tmp_path):
+    """A regression test: canonical_url used to be the shared listing
+    ENDPOINT for every record, so "browse original source" dumped a
+    reader into the entire ~35,600-record catalog instead of the one
+    licence they were looking at (caught live, in the UI, 2026-08-30).
+    `?id=<licence_no>` is documented and confirmed live to return just
+    that one record."""
+    storage, _manifest, scraper = make_scraper(tmp_path)
+    responses.add(responses.GET, ENDPOINT, json=[licence_record(1)], status=200)
+
+    scraper.run()
+
+    meta = json.loads(storage.read_text("ca/mdall/documents/1/current.meta.json"))
+    assert meta["canonical_url"] == "https://health-products.canada.ca/api/medical-devices/licence/?id=1&type=json&lang=en"
+    assert meta["canonical_url"] != ENDPOINT
     assert meta["title"] == "Test Device"
 
 

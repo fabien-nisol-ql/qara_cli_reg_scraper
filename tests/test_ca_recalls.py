@@ -66,11 +66,25 @@ def test_source_metadata_is_captured(tmp_path):
     scraper.run()
 
     meta = json.loads(storage.read_text("ca/recalls/documents/1/current.meta.json"))
-    sm = meta["source_metadata"]
-    assert sm["nid"] == "1"
-    assert sm["canonical_url"] == "https://recalls-rappels.canada.ca/en/alert-recall/1"
-    assert sm["issue"] == "Performance"
-    assert sm["recall_class"] == "Type II"
+    assert meta["source_metadata"]["nid"] == "1"
+    assert meta["source_metadata"]["issue"] == "Performance"
+    assert meta["source_metadata"]["recall_class"] == "Type II"
+
+
+@responses.activate
+def test_canonical_url_is_the_records_own_page_not_the_shared_dataset(tmp_path):
+    """A regression test: canonical_url used to be DATASET_URL for every
+    record, so "browse original source" dumped a reader into the entire
+    ~34,000-record dataset instead of the one recall they were looking
+    at (caught live, in the UI, 2026-08-30)."""
+    storage, _manifest, scraper = make_scraper(tmp_path)
+    responses.add(responses.GET, DATASET_URL, json=[recall_record("1")], status=200)
+
+    scraper.run()
+
+    meta = json.loads(storage.read_text("ca/recalls/documents/1/current.meta.json"))
+    assert meta["canonical_url"] == "https://recalls-rappels.canada.ca/en/alert-recall/1"
+    assert meta["canonical_url"] != DATASET_URL
 
 
 @responses.activate

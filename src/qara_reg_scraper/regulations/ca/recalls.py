@@ -18,8 +18,13 @@ the EU analog of fda:recalls (openFDA's `device/enforcement`).
 `NID` is the record's own natural, stable primary key — no synthetic id
 needed. No per-record network fetch needed (the record's already inline
 in the listing response), same as ca:mdall/fda:classification; `URL`
-(the human-readable recall page) is captured in `source_metadata` for
-reference but not itself fetched.
+(the record's own dedicated human-readable recall page) is used as the
+saved document's `canonical_url` — not `DATASET_URL`, which every other
+record also points at and would otherwise make "browse original source"
+dump a reader into the entire dataset instead of the one recall they
+were actually looking at (same "the record's own scoped URL, not the
+shared listing" convention fda:classification.py/fda:recalls.py use with
+openFDA's `search=` param).
 
 `recalls-rappels.canada.ca/robots.txt` (checked in full — a standard
 Drupal robots.txt) does not disallow the
@@ -102,14 +107,21 @@ class RecallsScraper(BaseScraper):
         self.manifest.save_document(
             nid,
             content,
-            url=DATASET_URL,
+            # The record's own dedicated page (record["URL"]), not the
+            # shared DATASET_URL every other record also points at -
+            # without this, "browse original source" would dump a reader
+            # into the entire ~34,000-record dataset instead of the one
+            # recall they were actually looking at. Falls back to
+            # DATASET_URL only if a record is ever missing its own URL
+            # (not observed live, but this source's own network fetch
+            # shouldn't fail just because one field is absent).
+            url=record.get("URL") or DATASET_URL,
             title=record.get("Title"),
             ext="json",
             content_type="application/json",
             http_status=200,
             source_metadata={
                 "nid": record.get("NID"),
-                "canonical_url": record.get("URL"),
                 "issue": record.get("Issue"),
                 "category": record.get("Category"),
                 "recall_class": record.get("Recall class"),
