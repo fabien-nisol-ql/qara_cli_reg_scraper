@@ -141,8 +141,10 @@ class ScraperServiceClient:
 
     def sync_sources(self, sources: list[dict[str, Any]]) -> Any:
         """PUT /v1/sources — a bulk replace-in-place of the whole known-source
-        registry (regulation/source/label/description), not a single-item
-        upsert like every method above. The service upserts each entry by
+        registry (regulation/source/label/description, plus each source's
+        effective settings — enabled/pacing/per-run limit/recheck cadence/
+        lookback window), not a single-item upsert like every method above.
+        The service upserts each entry by
         (regulation, source) and deletes any row not present in `sources`,
         so this is a full sync, not an additive push — always pass the
         *entire* registry, never a partial list. See

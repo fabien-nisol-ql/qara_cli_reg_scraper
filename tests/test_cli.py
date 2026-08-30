@@ -706,9 +706,58 @@ def test_sync_sources_pushes_the_full_registry(tmp_path, monkeypatch):
             "source": "ecfr",
             "label": _RecordingScraper.label or "ecfr",
             "description": _RecordingScraper.description,
+            # Effective values resolved from make_settings' defaults (no
+            # per-source override set here -> falls through to the global
+            # ones) - see _source_registry_payload's own docstring.
+            "enabled": True,
+            "requestsPerSecond": settings.http.requests_per_second,
+            "maxNewDocumentsPerRun": 25,  # make_settings' own global_max_new default
+            "recheckAfterDays": None,
+            "lookbackDays": None,
         }
     ]
     assert "Synced 1 known source(s)" in result.output
+
+
+def test_sync_sources_pushes_effective_per_source_overrides(tmp_path, monkeypatch):
+    """A source with real config.yaml overrides must push its OWN resolved
+    values, not the global defaults - the precedence chain
+    _source_registry_payload shares with `run`'s own preview table."""
+    _RecordingServiceClient.sync_sources_calls = []
+    settings = make_settings(
+        tmp_path, source_max_new=10, source_rps=0.2, source_recheck=14, source_lookback=30,
+    ).model_copy(update={"service": ServiceSettings(base_url="http://svc")})
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli_module, "ScraperServiceClient", _RecordingServiceClient)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(cli_module.app, ["sync-sources"])
+
+    assert result.exit_code == 0, result.output
+    pushed = _RecordingServiceClient.sync_sources_calls[0][0]
+    assert pushed["enabled"] is True
+    assert pushed["requestsPerSecond"] == 0.2
+    assert pushed["maxNewDocumentsPerRun"] == 10
+    assert pushed["recheckAfterDays"] == 14
+    assert pushed["lookbackDays"] == 30
+
+
+def test_sync_sources_normalizes_an_unlimited_per_source_override(tmp_path, monkeypatch):
+    """-1 (the config.yaml/CLI spelling of "unlimited") must resolve to
+    None in the payload, same as everywhere else normalize_unlimited is
+    applied - not pushed as the literal sentinel int."""
+    _RecordingServiceClient.sync_sources_calls = []
+    settings = make_settings(tmp_path, source_max_new=-1).model_copy(
+        update={"service": ServiceSettings(base_url="http://svc")}
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli_module, "ScraperServiceClient", _RecordingServiceClient)
+    patch_registry(monkeypatch, {"fda": {"ecfr": _RecordingScraper}})
+
+    result = runner.invoke(cli_module.app, ["sync-sources"])
+
+    assert result.exit_code == 0, result.output
+    assert _RecordingServiceClient.sync_sources_calls[0][0]["maxNewDocumentsPerRun"] is None
 
 
 def test_run_pushes_source_registry_when_service_configured(tmp_path, monkeypatch):
